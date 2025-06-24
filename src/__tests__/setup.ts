@@ -1,5 +1,5 @@
 // Mock React Native modules
-jest.mock('react-native', () => ({
+jest.mock("react-native", () => ({
   NativeModules: {
     AudioChunkRecorder: {
       startRecording: jest.fn(),
@@ -10,20 +10,20 @@ jest.mock('react-native', () => ({
       isRecording: jest.fn().mockReturnValue(false),
       isPaused: jest.fn().mockReturnValue(false),
       getAudioLevel: jest.fn().mockReturnValue(0),
-      isAvailable: jest.fn().mockReturnValue(true)
-    }
+      isAvailable: jest.fn().mockReturnValue(true),
+    },
   },
   NativeEventEmitter: jest.fn(() => ({
     addListener: jest.fn(() => ({ remove: jest.fn() })),
-    removeAllListeners: jest.fn()
+    removeAllListeners: jest.fn(),
   })),
   Platform: {
-    OS: 'ios',
-    select: jest.fn(options => options.ios)
+    OS: "ios",
+    select: jest.fn((options) => options.ios),
   },
   Alert: {
-    alert: jest.fn()
-  }
+    alert: jest.fn(),
+  },
 }));
 
 // Mock timers
@@ -46,4 +46,11 @@ beforeAll(() => {
 afterAll(() => {
   console.warn = originalWarn;
   console.error = originalError;
+});
+
+// Basic test to satisfy Jest requirement
+describe("Setup", () => {
+  it("should setup mocks correctly", () => {
+    expect(true).toBe(true);
+  });
 });

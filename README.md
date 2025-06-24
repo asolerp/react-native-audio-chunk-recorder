@@ -13,64 +13,11 @@ A modular React Native audio recording library with chunking support and configu
 
 ## Installation
 
-### From NPM (when published)
-
 ```bash
-npm install react-native-audio-chunk-recorder
+npm install @asolerp/react-native-audio-chunk-recorder
 # or
-yarn add react-native-audio-chunk-recorder
+yarn add @asolerp/react-native-audio-chunk-recorder
 ```
-
-### Local Development Installation
-
-If you're installing this module locally during development:
-
-```bash
-# Option 1: Automated setup (recommended)
-cd react-native-audio-chunk-recorder
-npm run setup-project  # Configure project for compatibility
-npm run install-local  # Install with conflict resolution
-
-# Option 2: Manual installation
-cd path/to/your/project
-npm install ./react-native-audio-chunk-recorder --force
-
-# Option 3: Step by step
-cd react-native-audio-chunk-recorder
-npm run setup-project  # Only needed once
-cd ..
-npm install ./react-native-audio-chunk-recorder --legacy-peer-deps
-```
-
-### Troubleshooting Dependency Conflicts
-
-If you encounter `ERESOLVE` errors related to React versions:
-
-1. **Automatic Resolution** (recommended):
-
-   ```bash
-   cd react-native-audio-chunk-recorder
-   npm run setup-project
-   npm run install-local
-   ```
-
-2. **Manual Resolution**:
-   Add to your project's `package.json`:
-
-   ```json
-   {
-     "overrides": {
-       "@apollo/client": {
-         "react": "$react"
-       }
-     }
-   }
-   ```
-
-3. **Force Installation**:
-   ```bash
-   npm install ./react-native-audio-chunk-recorder --force
-   ```
 
 ### iOS Setup
 
@@ -173,9 +120,9 @@ This library supports background recording on both iOS and Android. When properl
 ### Basic Usage
 
 ```tsx
-import React from 'react';
-import { View, Button } from 'react-native';
-import { useAudioRecorderCore } from 'react-native-audio-chunk-recorder';
+import React from "react";
+import { View, Button } from "react-native";
+import { useAudioRecorderCore } from "react-native-audio-chunk-recorder";
 
 export const RecordingScreen = () => {
   const { isRecording, startRecording, stopRecording, chunks, hasPermission } =
@@ -188,7 +135,7 @@ export const RecordingScreen = () => {
   return (
     <View>
       <Button
-        title={isRecording ? 'Stop Recording' : 'Start Recording'}
+        title={isRecording ? "Stop Recording" : "Start Recording"}
         onPress={isRecording ? stopRecording : startRecording}
       />
       <Text>Chunks recorded: {chunks.length}</Text>
@@ -200,34 +147,34 @@ export const RecordingScreen = () => {
 ### Advanced Usage with Custom Providers
 
 ```tsx
-import React from 'react';
+import React from "react";
 import {
   useAudioRecorderCore,
-  createJotaiStateManager
-} from 'react-native-audio-chunk-recorder';
-import { useStore } from 'jotai';
-import { audioInterruptionAtom } from './atoms';
+  createJotaiStateManager,
+} from "react-native-audio-chunk-recorder";
+import { useStore } from "jotai";
+import { audioInterruptionAtom } from "./atoms";
 
 const customAlertProvider = {
   showAlert: (title, message, buttons) => {
     // Custom alert implementation
     MyCustomAlert.show({ title, message, buttons });
-  }
+  },
 };
 
 const customInterruptionHandler = {
-  onInterruption: data => {
+  onInterruption: (data) => {
     // Custom interruption logic
-    console.log('Custom interruption handling:', data);
+    console.log("Custom interruption handling:", data);
   },
-  onDeviceDisconnected: data => {
+  onDeviceDisconnected: (data) => {
     // Custom device disconnection logic
-    console.log('Device disconnected:', data);
-  }
+    console.log("Device disconnected:", data);
+  },
 };
 
 const atoms = {
-  audioInterruption: audioInterruptionAtom
+  audioInterruption: audioInterruptionAtom,
 };
 
 export const AdvancedRecordingScreen = () => {
@@ -242,17 +189,43 @@ export const AdvancedRecordingScreen = () => {
     defaultRecordingOptions: {
       sampleRate: 16000, // Optimized for speech recognition
       bitRate: 64000, // Good quality for speech
-      chunkSeconds: 30 // Balanced chunk size
+      chunkSeconds: 30, // Balanced chunk size
     },
-    onChunkReady: chunk => {
-      console.log('New chunk ready:', chunk);
+    onChunkReady: (chunk) => {
+      console.log("New chunk ready:", chunk);
       // Custom chunk handling
-    }
+    },
   });
 
   // ... rest of component
 };
 ```
+
+## Audio Formats
+
+### iOS Supported Formats
+
+- **AAC** (Advanced Audio Codec) - Default, best balance of quality and size
+- **Linear PCM** - Uncompressed, highest quality
+- **AIFF** - Apple Interchange File Format
+- **CAF** - Core Audio Format (Apple's container format)
+- **FLAC** - Free Lossless Audio Codec (iOS 11+)
+
+### Android Supported Formats
+
+- **AAC** - Advanced Audio Codec (recommended)
+- **AMR_NB** - Adaptive Multi-Rate Narrowband (8kHz)
+- **AMR_WB** - Adaptive Multi-Rate Wideband (16kHz)
+- **MPEG_4** - MPEG-4 audio format
+- **THREE_GPP** - 3GPP multimedia format
+- **WEBM** - WebM audio format (Android 5.0+)
+- **OGG** - OGG Vorbis format (Android 10+)
+
+### Recommended Settings
+
+- **Sample Rate**: 44100 Hz (CD quality) or 16000 Hz (speech optimized)
+- **Bit Rate**: 128 kbps (high quality) or 64 kbps (speech optimized)
+- **Format**: AAC (best compatibility across platforms)
 
 ## API Reference
 
@@ -317,6 +290,34 @@ interface AudioRecorderCoreReturn {
 }
 ```
 
+## Methods and Properties Reference
+
+| Name                       | Description                                                  |
+| -------------------------- | ------------------------------------------------------------ |
+| **State Properties**       |
+| `isRecording`              | Boolean indicating if recording is currently active          |
+| `isPaused`                 | Boolean indicating if recording is currently paused          |
+| `hasPermission`            | Boolean indicating if microphone permission is granted       |
+| `chunks`                   | Array of recorded audio chunks with metadata                 |
+| `audioLevel`               | Current audio input level (0-1) for visualizations           |
+| `hasAudio`                 | Boolean indicating if any audio has been recorded            |
+| `isAvailable`              | Boolean indicating if audio recording is available on device |
+| `isInterrupted`            | Boolean indicating if recording was interrupted              |
+| **Recording Actions**      |
+| `startRecording(options?)` | Starts audio recording with optional configuration           |
+| `stopRecording()`          | Stops current recording session                              |
+| `pauseRecording()`         | Pauses current recording (can be resumed)                    |
+| `resumeRecording()`        | Resumes paused recording                                     |
+| `clearChunks()`            | Clears all recorded chunks from memory                       |
+| `clearAllChunkFiles()`     | Deletes all chunk files from device storage                  |
+| `checkPermissions()`       | Manually checks and requests microphone permissions          |
+| **Event Handlers**         |
+| `onChunkReady(callback)`   | Fires when a new audio chunk is ready                        |
+| `onAudioLevel(callback)`   | Fires with real-time audio level data                        |
+| `onError(callback)`        | Fires when recording errors occur                            |
+| `onInterruption(callback)` | Fires when recording is interrupted (calls, etc.)            |
+| `onStateChange(callback)`  | Fires when recording state changes                           |
+
 ## Providers
 
 ### AlertProvider
@@ -365,15 +366,15 @@ interface InterruptionHandler {
 ### With Jotai
 
 ```tsx
-import { atom, useAtom } from 'jotai';
-import { createJotaiStateManager } from 'react-native-audio-chunk-recorder';
+import { atom, useAtom } from "jotai";
+import { createJotaiStateManager } from "react-native-audio-chunk-recorder";
 
 const audioInterruptionAtom = atom(false);
 const audioAlertActiveAtom = atom(false);
 
 const atoms = {
   audioInterruption: audioInterruptionAtom,
-  audioAlertActive: audioAlertActiveAtom
+  audioAlertActive: audioAlertActiveAtom,
 };
 
 const stateManager = createJotaiStateManager(store, atoms);
@@ -384,17 +385,17 @@ const stateManager = createJotaiStateManager(store, atoms);
 Create your own adapter:
 
 ```tsx
-import { useDispatch, useSelector } from 'react-redux';
+import { useDispatch, useSelector } from "react-redux";
 
 const createReduxStateManager = () => ({
-  getState: key => useSelector(state => state[key]),
+  getState: (key) => useSelector((state) => state[key]),
   setState: (key, value) => {
     const dispatch = useDispatch();
     dispatch({ type: `SET_${key.toUpperCase()}`, payload: value });
   },
   subscribe: (key, callback) => {
     // Redux subscription logic
-  }
+  },
 });
 ```
 
@@ -411,8 +412,8 @@ import type {
   RecordingOptions,
   AlertProvider,
   StateManager,
-  InterruptionHandler
-} from 'react-native-audio-chunk-recorder';
+  InterruptionHandler,
+} from "react-native-audio-chunk-recorder";
 ```
 
 ## Architecture
