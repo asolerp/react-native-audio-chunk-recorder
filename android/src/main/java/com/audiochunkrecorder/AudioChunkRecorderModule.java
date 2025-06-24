@@ -170,10 +170,12 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         }
         
         try {
-            // Stop AudioRecord
-            if (audioRecord != null) {
-                audioRecord.stop();
-            }
+            // Update recorded time BEFORE stopping AudioRecord
+            long now = System.currentTimeMillis();
+            accumulatedRecordingTime += (now - chunkStartTime) / 1000.0;
+            
+            // Update state FIRST to stop the recording thread
+            isPaused = true;
             
             // Cancel chunk timer
             if (chunkTimer != null) {
@@ -181,18 +183,16 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
                 chunkTimer = null;
             }
             
-            // Update state
-            isPaused = true;
+            // Stop AudioRecord AFTER updating state
+            if (audioRecord != null) {
+                audioRecord.stop();
+            }
             
             // Stop audio level monitoring when paused
             stopAudioLevelMonitoring();
             
             // Send state change event
             sendStateChangeEvent();
-            
-            // Update recorded time
-            long now = System.currentTimeMillis();
-            accumulatedRecordingTime += (now - chunkStartTime) / 1000.0;
             
             promise.resolve("Recording paused");
             Log.i(TAG, "Recording paused successfully");
@@ -210,6 +210,14 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         }
         
         try {
+            // Resume AudioRecord FIRST
+            if (audioRecord != null) {
+                audioRecord.startRecording();
+            }
+            
+            // Update state
+            isPaused = false;
+            
             // Calculate remaining time
             double remainingTime = chunkDuration - accumulatedRecordingTime;
             if (remainingTime <= 0) {
@@ -557,31 +565,40 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             return;
         }
         
-        // Read audio data to calculate level
-        int bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
-        short[] buffer = new short[bufferSize];
-        int bytesRead = audioRecord.read(buffer, 0, buffer.length);
-        
-        if (bytesRead > 0) {
-            // Calculate RMS (Root Mean Square) for audio level
-            long sum = 0;
-            for (int i = 0; i < bytesRead; i++) {
-                sum += buffer[i] * buffer[i];
+        try {
+            // Read audio data to calculate level
+            int bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
+            short[] buffer = new short[bufferSize];
+            int bytesRead = audioRecord.read(buffer, 0, buffer.length);
+            
+            if (bytesRead > 0) {
+                // Calculate RMS (Root Mean Square) for audio level
+                long sum = 0;
+                for (int i = 0; i < bytesRead; i++) {
+                    sum += buffer[i] * buffer[i];
+                }
+                
+                double rms = Math.sqrt(sum / (double) bytesRead);
+                
+                // Convert to normalized level (0.0 to 1.0)
+                double normalizedLevel = Math.min(1.0, rms / 3000.0); // Adjust threshold based on testing
+                boolean hasAudio = normalizedLevel > 0.15; // Lower threshold for Android
+                
+                currentAudioLevel = normalizedLevel;
+                
+                WritableMap params = Arguments.createMap();
+                params.putDouble("level", normalizedLevel);
+                params.putBoolean("hasAudio", hasAudio);
+                params.putDouble("averagePower", rms);
+                sendEvent("onAudioLevel", params);
+            } else if (bytesRead == AudioRecord.ERROR_INVALID_OPERATION) {
+                // AudioRecord is not in recording state, stop monitoring
+                Log.w(TAG, "AudioRecord not in recording state, stopping audio level monitoring");
+                stopAudioLevelMonitoring();
             }
-            
-            double rms = Math.sqrt(sum / (double) bytesRead);
-            
-            // Convert to normalized level (0.0 to 1.0)
-            double normalizedLevel = Math.min(1.0, rms / 3000.0); // Adjust threshold based on testing
-            boolean hasAudio = normalizedLevel > 0.15; // Lower threshold for Android
-            
-            currentAudioLevel = normalizedLevel;
-            
-            WritableMap params = Arguments.createMap();
-            params.putDouble("level", normalizedLevel);
-            params.putBoolean("hasAudio", hasAudio);
-            params.putDouble("averagePower", rms);
-            sendEvent("onAudioLevel", params);
+        } catch (Exception e) {
+            Log.e(TAG, "Error updating audio level", e);
+            // Don't send error event for audio level issues to avoid spam
         }
     }
     
@@ -597,14 +614,38 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
                 byte[] buffer = new byte[bufferSize];
                 
                 while (isRecording && !isPaused && audioRecord != null) {
+                    // Check if AudioRecord is in recording state
+                    if (audioRecord.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+                        // Wait a bit and continue if still recording
+                        if (isRecording && !isPaused) {
+                            Thread.sleep(10);
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                    
                     int bytesRead = audioRecord.read(buffer, 0, buffer.length);
                     if (bytesRead > 0) {
                         fos.write(buffer, 0, bytesRead);
+                    } else if (bytesRead == AudioRecord.ERROR_INVALID_OPERATION) {
+                        // AudioRecord is not in recording state, break
+                        Log.w(TAG, "AudioRecord not in recording state, stopping thread");
+                        break;
+                    } else if (bytesRead == AudioRecord.ERROR_BAD_VALUE) {
+                        // Invalid parameters, break
+                        Log.e(TAG, "AudioRecord read error: ERROR_BAD_VALUE");
+                        break;
                     }
                 }
             } catch (IOException e) {
                 Log.e(TAG, "Error writing audio data", e);
                 sendErrorEvent("Error writing audio data: " + e.getMessage());
+            } catch (InterruptedException e) {
+                Log.i(TAG, "Recording thread interrupted");
+            } catch (Exception e) {
+                Log.e(TAG, "Unexpected error in recording thread", e);
+                sendErrorEvent("Unexpected error in recording thread: " + e.getMessage());
             }
         }
     }
