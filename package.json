@@ -23,6 +23,14 @@
   ],
   "author": "DocPlanner",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/asolerp/react-native-audio-chunk-recorder.git"
+  },
+  "homepage": "https://github.com/asolerp/react-native-audio-chunk-recorder#readme",
+  "bugs": {
+    "url": "https://github.com/asolerp/react-native-audio-chunk-recorder/issues"
+  },
   "peerDependencies": {
     "react": ">=16.8.0 <20.0.0",
     "react-native": ">=0.60.0"
