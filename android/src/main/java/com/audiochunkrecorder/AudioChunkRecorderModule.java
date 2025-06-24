@@ -636,6 +636,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
                             try {
                                 Thread.sleep(50);
                             } catch (InterruptedException e) {
+                                Log.w(TAG, "Recording thread interrupted");
                                 break;
                             }
                             continue;
@@ -652,8 +653,6 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             } catch (IOException e) {
                 Log.e(TAG, "Error writing audio data", e);
                 sendErrorEvent("Error writing audio data: " + e.getMessage());
-            } catch (InterruptedException e) {
-                Log.w(TAG, "Recording thread interrupted");
             }
             
             Log.i(TAG, "Recording thread finished");
