@@ -52,6 +52,10 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     private Runnable audioLevelRunnable;
     private double currentAudioLevel = 0.0;
     
+    // Add new fields for chunk timing
+    private long chunkStartTime = 0; // epoch millis when current chunk started (or resumed)
+    private double accumulatedRecordingTime = 0.0; // seconds recorded in current chunk before a pause
+    
     public AudioChunkRecorderModule(ReactApplicationContext reactContext) {
         super(reactContext);
         setupRecordingDirectory();
@@ -446,22 +450,19 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         }
         
         audioRecord.startRecording();
+        isRecording = true;
+        isPaused = false;
         
-        // Update state with proper synchronization
-        synchronized (stateLock) {
-            isRecording = true;
-            isPaused = false;
-        }
-        
-        // Reset thread stop flag
-        shouldStopThread = false;
-        
+        // Reset timing for this new chunk
+        accumulatedRecordingTime = 0.0;
+        chunkStartTime = System.currentTimeMillis();
+
         // Start recording thread
         recordingThread = new Thread(new RecordingRunnable());
         recordingThread.start();
-        
-        // Start chunk timer
-        startChunkTimer();
+
+        // Start timer for this chunk
+        scheduleRotation(chunkDuration);
         
         // Start audio level monitoring (safely)
         startAudioLevelMonitoring();
@@ -469,14 +470,21 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         // Send state change event
         sendStateChangeEvent();
         
-        Log.i(TAG, "Started recording chunk " + currentChunkIndex + " - isRecording: " + isRecording + ", isPaused: " + isPaused);
+        Log.i(TAG, "Started recording chunk " + currentChunkIndex);
     }
     
-    private void startChunkTimer() {
+    private void scheduleRotation(double delaySeconds) {
+        if (chunkTimer != null) {
+            chunkTimer.cancel();
+            chunkTimer = null;
+        }
         chunkTimer = new Timer();
+        long delayMs = (long) (delaySeconds * 1000);
+        Log.i(TAG, "Scheduling chunk rotation in " + delayMs + "ms (" + delaySeconds + "s)");
         chunkTimer.schedule(new TimerTask() {
             @Override
             public void run() {
+                Log.i(TAG, "Chunk timer fired - finishing current chunk");
                 if (isRecording && !isPaused) {
                     finishCurrentChunk();
                     try {
@@ -487,7 +495,12 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
                     }
                 }
             }
-        }, (long)(chunkDuration * 1000), (long)(chunkDuration * 1000));
+        }, delayMs);
+    }
+    
+    private void startChunkTimer() {
+        // This method is deprecated, use scheduleRotation instead
+        scheduleRotation(chunkDuration);
     }
     
     private void finishCurrentChunk() {
