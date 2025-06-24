@@ -55,20 +55,8 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         super(reactContext);
         setupRecordingDirectory();
         setupPhoneStateListener();
-        initializeHandler();
-    }
-    
-    private void initializeHandler() {
-        try {
-            // Initialize handler on the main thread to avoid looper issues
-            if (Looper.getMainLooper() != null) {
-                audioLevelHandler = new Handler(Looper.getMainLooper());
-            } else {
-                Log.w(TAG, "Main looper not available during initialization");
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Failed to initialize handler: " + e.getMessage());
-        }
+        // Use main looper directly like your working code
+        audioLevelHandler = new Handler(Looper.getMainLooper());
     }
     
     @Override
@@ -354,12 +342,24 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     
     @ReactMethod
     public void checkPermissions(Promise promise) {
-        boolean hasPermission = ActivityCompat.checkSelfPermission(
-            getReactApplicationContext(),
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED;
-        
-        promise.resolve(hasPermission);
+        try {
+            boolean hasRecordPermission = ActivityCompat.checkSelfPermission(
+                getReactApplicationContext(),
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED;
+            
+            boolean hasStoragePermission = ActivityCompat.checkSelfPermission(
+                getReactApplicationContext(),
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED;
+            
+            // For Android 6.0+, we need both permissions
+            boolean hasAllPermissions = hasRecordPermission; // Storage not required for internal files
+            
+            promise.resolve(hasAllPermissions);
+        } catch (Exception e) {
+            promise.reject("PERMISSION_ERROR", "Error checking permissions: " + e.getMessage());
+        }
     }
     
     @ReactMethod
@@ -383,16 +383,66 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     }
     
     @ReactMethod
-    public void clearAllChunkFiles(Promise promise) {
-        File[] files = recordingDirectory.listFiles();
-        if (files != null) {
-            for (File file : files) {
-                file.delete();
-            }
+    public void hasAudioSession(Promise promise) {
+        // Android equivalent of iOS audio session availability
+        promise.resolve(true);
+    }
+    
+    @ReactMethod
+    public void getCurrentChunkIndex(Promise promise) {
+        promise.resolve(currentChunkIndex);
+    }
+    
+    @ReactMethod
+    public void getChunkDuration(Promise promise) {
+        promise.resolve(chunkDuration);
+    }
+    
+    @ReactMethod
+    public void getRecordingState(Promise promise) {
+        try {
+            WritableMap state = Arguments.createMap();
+            state.putBoolean("isRecording", isRecording);
+            state.putBoolean("isPaused", isPaused);
+            state.putBoolean("isAvailable", true);
+            state.putBoolean("hasPermission", checkPermissions());
+            state.putInt("currentChunkIndex", currentChunkIndex);
+            state.putDouble("chunkDuration", chunkDuration);
+            state.putDouble("audioLevel", currentAudioLevel);
+            
+            promise.resolve(state);
+        } catch (Exception e) {
+            promise.reject("STATE_ERROR", "Error getting recording state: " + e.getMessage());
         }
-        currentChunkIndex = 0;
-        promise.resolve("All chunk files cleared");
-        Log.i(TAG, "Cleared all chunks");
+    }
+    
+    @ReactMethod
+    public void clearAllChunkFiles(Promise promise) {
+        try {
+            File[] files = recordingDirectory.listFiles();
+            int deletedCount = 0;
+            
+            if (files != null) {
+                for (File file : files) {
+                    String fileName = file.getName();
+                    // Delete files that start with "chunk_" and end with ".wav"
+                    if (fileName.startsWith("chunk_") && fileName.endsWith(".wav")) {
+                        if (file.delete()) {
+                            deletedCount++;
+                        } else {
+                            Log.w(TAG, "Failed to delete chunk file: " + fileName);
+                        }
+                    }
+                }
+            }
+            
+            currentChunkIndex = 0;
+            String message = "Deleted " + deletedCount + " chunk files";
+            promise.resolve(message);
+            Log.i(TAG, message);
+        } catch (Exception e) {
+            promise.reject("FILE_ERROR", "Could not clear chunk files: " + e.getMessage());
+        }
     }
     
     private boolean checkPermissions() {
@@ -422,19 +472,8 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     }
     
     private void startAudioLevelMonitoring() {
-        if (audioLevelHandler == null) {
-            // Ensure we're on the main thread when accessing the main looper
-            Looper mainLooper = Looper.getMainLooper();
-            if (mainLooper != null) {
-                audioLevelHandler = new Handler(mainLooper);
-            } else {
-                Log.w(TAG, "Main looper is null, falling back to current thread looper");
-                // Fallback to current thread looper or create one if needed
-                if (Looper.myLooper() == null) {
-                    Looper.prepare();
-                }
-                audioLevelHandler = new Handler(Looper.myLooper());
-            }
+        if (audioLevelRunnable != null) {
+            audioLevelHandler.removeCallbacks(audioLevelRunnable);
         }
         
         audioLevelRunnable = new Runnable() {
@@ -442,33 +481,25 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             public void run() {
                 if (isRecording && !isPaused && audioRecord != null) {
                     updateAudioLevel();
-                    // Update every 100ms like iOS
-                    if (audioLevelHandler != null) {
-                        audioLevelHandler.postDelayed(this, 100);
-                    }
+                    audioLevelHandler.postDelayed(this, 100); // Update every 100ms
                 }
             }
         };
         
-        if (audioLevelHandler != null) {
-            audioLevelHandler.post(audioLevelRunnable);
-        }
+        audioLevelHandler.post(audioLevelRunnable);
     }
     
     private void stopAudioLevelMonitoring() {
-        try {
-            if (audioLevelHandler != null && audioLevelRunnable != null) {
-                audioLevelHandler.removeCallbacks(audioLevelRunnable);
-            }
-            
-            // Send zero level when stopping
-            WritableMap params = Arguments.createMap();
-            params.putDouble("level", 0.0);
-            params.putBoolean("hasAudio", false);
-            sendEvent("onAudioLevel", params);
-        } catch (Exception e) {
-            Log.w(TAG, "Error stopping audio level monitoring: " + e.getMessage());
+        if (audioLevelRunnable != null) {
+            audioLevelHandler.removeCallbacks(audioLevelRunnable);
+            audioLevelRunnable = null;
         }
+        
+        // Send zero level when stopping
+        WritableMap params = Arguments.createMap();
+        params.putDouble("level", 0.0);
+        params.putBoolean("hasAudio", false);
+        sendEvent("onAudioLevel", params);
     }
     
     private void updateAudioLevel() {
@@ -536,12 +567,8 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
              
              // Clean up handlers
              if (audioLevelHandler != null) {
-                 try {
-                     audioLevelHandler.removeCallbacksAndMessages(null);
-                     audioLevelHandler = null;
-                 } catch (Exception e) {
-                     Log.e(TAG, "Error cleaning up handler", e);
-                 }
+                 audioLevelHandler.removeCallbacksAndMessages(null);
+                 audioLevelHandler = null;
              }
          } catch (Exception e) {
              Log.e(TAG, "Error during cleanup", e);

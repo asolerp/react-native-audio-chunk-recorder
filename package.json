@@ -57,6 +57,12 @@
     "ts-jest": "^29.4.0",
     "typescript": "^5.0.0"
   },
+  "react-native": {
+    "android": {
+      "sourceDir": "./android",
+      "packageImportPath": "import com.audiochunkrecorder.AudioChunkRecorderPackage;"
+    }
+  },
   "files": [
     "lib/**/*.js",
     "lib/**/*.d.ts",
