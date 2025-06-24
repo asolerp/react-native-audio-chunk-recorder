@@ -55,6 +55,20 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         super(reactContext);
         setupRecordingDirectory();
         setupPhoneStateListener();
+        initializeHandler();
+    }
+    
+    private void initializeHandler() {
+        try {
+            // Initialize handler on the main thread to avoid looper issues
+            if (Looper.getMainLooper() != null) {
+                audioLevelHandler = new Handler(Looper.getMainLooper());
+            } else {
+                Log.w(TAG, "Main looper not available during initialization");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to initialize handler: " + e.getMessage());
+        }
     }
     
     @Override
@@ -409,7 +423,18 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     
     private void startAudioLevelMonitoring() {
         if (audioLevelHandler == null) {
-            audioLevelHandler = new Handler(Looper.getMainLooper());
+            // Ensure we're on the main thread when accessing the main looper
+            Looper mainLooper = Looper.getMainLooper();
+            if (mainLooper != null) {
+                audioLevelHandler = new Handler(mainLooper);
+            } else {
+                Log.w(TAG, "Main looper is null, falling back to current thread looper");
+                // Fallback to current thread looper or create one if needed
+                if (Looper.myLooper() == null) {
+                    Looper.prepare();
+                }
+                audioLevelHandler = new Handler(Looper.myLooper());
+            }
         }
         
         audioLevelRunnable = new Runnable() {
@@ -418,24 +443,32 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
                 if (isRecording && !isPaused && audioRecord != null) {
                     updateAudioLevel();
                     // Update every 100ms like iOS
-                    audioLevelHandler.postDelayed(this, 100);
+                    if (audioLevelHandler != null) {
+                        audioLevelHandler.postDelayed(this, 100);
+                    }
                 }
             }
         };
         
-        audioLevelHandler.post(audioLevelRunnable);
+        if (audioLevelHandler != null) {
+            audioLevelHandler.post(audioLevelRunnable);
+        }
     }
     
     private void stopAudioLevelMonitoring() {
-        if (audioLevelHandler != null && audioLevelRunnable != null) {
-            audioLevelHandler.removeCallbacks(audioLevelRunnable);
+        try {
+            if (audioLevelHandler != null && audioLevelRunnable != null) {
+                audioLevelHandler.removeCallbacks(audioLevelRunnable);
+            }
+            
+            // Send zero level when stopping
+            WritableMap params = Arguments.createMap();
+            params.putDouble("level", 0.0);
+            params.putBoolean("hasAudio", false);
+            sendEvent("onAudioLevel", params);
+        } catch (Exception e) {
+            Log.w(TAG, "Error stopping audio level monitoring: " + e.getMessage());
         }
-        
-        // Send zero level when stopping
-        WritableMap params = Arguments.createMap();
-        params.putDouble("level", 0.0);
-        params.putBoolean("hasAudio", false);
-        sendEvent("onAudioLevel", params);
     }
     
     private void updateAudioLevel() {
@@ -479,27 +512,39 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
      }
      
      private void cleanup() {
-         // Stop recording if active
-         if (isRecording) {
-             try {
-                 stopRecording(null);
-             } catch (Exception e) {
-                 Log.e(TAG, "Error stopping recording during cleanup", e);
+         try {
+             // Stop recording if active
+             if (isRecording) {
+                 try {
+                     stopRecording(null);
+                 } catch (Exception e) {
+                     Log.e(TAG, "Error stopping recording during cleanup", e);
+                 }
              }
-         }
-         
-         // Remove phone state listener
-         if (telephonyManager != null && phoneStateListener != null) {
-             telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE);
-         }
-         
-         // Stop audio level monitoring
-         stopAudioLevelMonitoring();
-         
-         // Clean up handlers
-         if (audioLevelHandler != null) {
-             audioLevelHandler.removeCallbacksAndMessages(null);
-             audioLevelHandler = null;
+             
+             // Remove phone state listener
+             if (telephonyManager != null && phoneStateListener != null) {
+                 try {
+                     telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE);
+                 } catch (Exception e) {
+                     Log.e(TAG, "Error removing phone state listener", e);
+                 }
+             }
+             
+             // Stop audio level monitoring
+             stopAudioLevelMonitoring();
+             
+             // Clean up handlers
+             if (audioLevelHandler != null) {
+                 try {
+                     audioLevelHandler.removeCallbacksAndMessages(null);
+                     audioLevelHandler = null;
+                 } catch (Exception e) {
+                     Log.e(TAG, "Error cleaning up handler", e);
+                 }
+             }
+         } catch (Exception e) {
+             Log.e(TAG, "Error during cleanup", e);
          }
      }
     
