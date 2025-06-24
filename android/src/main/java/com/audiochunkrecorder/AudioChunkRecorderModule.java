@@ -55,8 +55,16 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         super(reactContext);
         setupRecordingDirectory();
         setupPhoneStateListener();
-        // Use main looper directly like your working code
-        audioLevelHandler = new Handler(Looper.getMainLooper());
+        
+        // Initialize handler safely like your working code
+        try {
+            // Ensure main thread is available before creating handler
+            if (Looper.getMainLooper() != null) {
+                audioLevelHandler = new Handler(Looper.getMainLooper());
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not initialize audio level handler: " + e.getMessage());
+        }
     }
     
     @Override
@@ -466,12 +474,41 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     }
     
     private void sendEvent(String eventName, WritableMap params) {
-        getReactApplicationContext()
-            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-            .emit(eventName, params);
+        try {
+            ReactApplicationContext context = getReactApplicationContext();
+            if (context != null && context.hasActiveCatalystInstance()) {
+                context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+                       .emit(eventName, params);
+            } else {
+                Log.w(TAG, "Cannot send event " + eventName + " - no active React context");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error sending event " + eventName + ": " + e.getMessage());
+        }
+    }
+    
+    private void ensureAudioLevelHandler() {
+        if (audioLevelHandler == null) {
+            try {
+                if (Looper.getMainLooper() != null) {
+                    audioLevelHandler = new Handler(Looper.getMainLooper());
+                } else {
+                    Log.w(TAG, "Main looper not available for audio level handler");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to create audio level handler: " + e.getMessage());
+            }
+        }
     }
     
     private void startAudioLevelMonitoring() {
+        ensureAudioLevelHandler();
+        
+        if (audioLevelHandler == null) {
+            Log.w(TAG, "Cannot start audio level monitoring - no handler available");
+            return;
+        }
+        
         if (audioLevelRunnable != null) {
             audioLevelHandler.removeCallbacks(audioLevelRunnable);
         }
@@ -479,7 +516,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         audioLevelRunnable = new Runnable() {
             @Override
             public void run() {
-                if (isRecording && !isPaused && audioRecord != null) {
+                if (isRecording && !isPaused && audioRecord != null && audioLevelHandler != null) {
                     updateAudioLevel();
                     audioLevelHandler.postDelayed(this, 100); // Update every 100ms
                 }
@@ -490,16 +527,24 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     }
     
     private void stopAudioLevelMonitoring() {
-        if (audioLevelRunnable != null) {
-            audioLevelHandler.removeCallbacks(audioLevelRunnable);
+        if (audioLevelRunnable != null && audioLevelHandler != null) {
+            try {
+                audioLevelHandler.removeCallbacks(audioLevelRunnable);
+            } catch (Exception e) {
+                Log.w(TAG, "Error removing audio level callbacks: " + e.getMessage());
+            }
             audioLevelRunnable = null;
         }
         
         // Send zero level when stopping
-        WritableMap params = Arguments.createMap();
-        params.putDouble("level", 0.0);
-        params.putBoolean("hasAudio", false);
-        sendEvent("onAudioLevel", params);
+        try {
+            WritableMap params = Arguments.createMap();
+            params.putDouble("level", 0.0);
+            params.putBoolean("hasAudio", false);
+            sendEvent("onAudioLevel", params);
+        } catch (Exception e) {
+            Log.w(TAG, "Error sending final audio level: " + e.getMessage());
+        }
     }
     
     private void updateAudioLevel() {
@@ -567,8 +612,13 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
              
              // Clean up handlers
              if (audioLevelHandler != null) {
-                 audioLevelHandler.removeCallbacksAndMessages(null);
-                 audioLevelHandler = null;
+                 try {
+                     audioLevelHandler.removeCallbacksAndMessages(null);
+                 } catch (Exception e) {
+                     Log.e(TAG, "Error cleaning up audio level handler", e);
+                 } finally {
+                     audioLevelHandler = null;
+                 }
              }
          } catch (Exception e) {
              Log.e(TAG, "Error during cleanup", e);
