@@ -3,7 +3,7 @@
  * This is the main hook that would be part of the NPM module
  */
 
-import { useRef, useEffect, useCallback, useState } from "react";
+import { useRef, useEffect, useCallback, useState, useMemo } from "react";
 
 import {
   NativeAudioChunkRecorder,
@@ -34,92 +34,75 @@ interface AudioRecorderNative {
   isAvailable: () => Promise<boolean>;
 }
 
-// This would be imported from the native module
-// For now, we'll inject it via options
-// declare const AudioRecorderService: AudioRecorderNative;
+// Performance constants
+const AUDIO_LEVEL_THROTTLE_MS = 100; // Throttle audio level updates
+const STATE_UPDATE_DEBOUNCE_MS = 50; // Debounce state updates
 
-export const useAudioRecorderCore = (
-  options: AudioRecorderCoreOptions = {}
-): AudioRecorderCoreReturn => {
-  // Use provided dependencies or defaults
-  const alertProvider = options.alertProvider || reactNativeAlertProvider;
-  const stateManager = options.stateManager || createSimpleStateManager();
+// Optimized event listener manager
+class EventListenerManager {
+  private listeners = {
+    onChunkReady: new Set<(chunk: ChunkData) => void>(),
+    onAudioLevel: new Set<(levelData: AudioLevelData) => void>(),
+    onError: new Set<(error: ErrorData) => void>(),
+    onInterruption: new Set<(interruption: InterruptionData) => void>(),
+    onStateChange: new Set<(state: StateChangeData) => void>(),
+  };
 
-  // Local state
-  const [isRecording, setIsRecording] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
-  const [hasPermission, setHasPermission] = useState(false);
-  const [chunks, setChunks] = useState<ChunkData[]>([]);
-  const [audioLevel, setAudioLevel] = useState(0);
-  const [hasAudio, setHasAudio] = useState(false);
-  const [isAvailable, setIsAvailable] = useState(false);
+  private nativeListeners: any[] = [];
+  private lastAudioLevelUpdate = 0;
+  private stateUpdateTimeout: NodeJS.Timeout | null = null;
 
-  // Global state (shared across hook instances)
-  const [isInterrupted, setIsInterrupted] = useState(false);
+  addListener<T extends keyof typeof this.listeners>(
+    event: T,
+    callback: Parameters<(typeof this.listeners)[T]["add"]>[0]
+  ) {
+    this.listeners[event].add(callback as any);
+  }
 
-  // Event listeners refs
-  const listenersRef = useRef<{
-    onChunkReady: Set<(chunk: ChunkData) => void>;
-    onAudioLevel: Set<(levelData: AudioLevelData) => void>;
-    onError: Set<(error: ErrorData) => void>;
-    onInterruption: Set<(interruption: InterruptionData) => void>;
-    onStateChange: Set<(state: StateChangeData) => void>;
-  }>({
-    onChunkReady: new Set(),
-    onAudioLevel: new Set(),
-    onError: new Set(),
-    onInterruption: new Set(),
-    onStateChange: new Set(),
-  });
+  removeListener<T extends keyof typeof this.listeners>(
+    event: T,
+    callback: Parameters<(typeof this.listeners)[T]["add"]>[0]
+  ) {
+    this.listeners[event].delete(callback as any);
+  }
 
-  // Native listeners refs
-  const nativeListenersRef = useRef<any[]>([]);
-
-  // Service ref
-  const serviceRef = useRef<AudioRecorderNative | null>(null);
-
-  // Initialize service
-  useEffect(() => {
-    try {
-      serviceRef.current = NativeAudioChunkRecorder;
-      NativeAudioChunkRecorder.isAvailable()
-        .then((available) => {
-          setIsAvailable(available);
-        })
-        .catch((error) => {
-          console.error(
-            "AudioRecorderCore: Failed to check availability:",
-            error
-          );
-          setIsAvailable(false);
-        });
-    } catch (error) {
-      console.error("AudioRecorderCore: Failed to initialize service:", error);
-      setIsAvailable(false);
+  notifyListeners<T extends keyof typeof this.listeners>(
+    event: T,
+    data: Parameters<Parameters<(typeof this.listeners)[T]["add"]>[0]>[0]
+  ) {
+    // Throttle audio level updates for performance
+    if (event === "onAudioLevel") {
+      const now = Date.now();
+      if (now - this.lastAudioLevelUpdate < AUDIO_LEVEL_THROTTLE_MS) {
+        return;
+      }
+      this.lastAudioLevelUpdate = now;
     }
-  }, []);
 
-  // Setup native event listeners
-  useEffect(() => {
-    if (!serviceRef.current) return;
+    this.listeners[event].forEach((listener: any) => {
+      try {
+        listener(data);
+      } catch (error) {
+        console.error(`AudioRecorderCore: Error in ${event} listener:`, error);
+      }
+    });
+  }
+
+  setupNativeListeners(
+    options: AudioRecorderCoreOptions,
+    stateManager: any,
+    alertProvider: any,
+    updateState: (updates: any) => void
+  ) {
+    // Clear existing listeners
+    this.cleanup();
 
     // Chunk ready listener
     const chunkListener = AudioChunkRecorderEventEmitter.addListener(
       "onChunkReady",
       (chunk: ChunkData) => {
         console.log("AudioRecorderCore: Chunk ready:", chunk);
-        setChunks((prev) => [...prev, chunk]);
-
-        // Notify custom listeners
-        listenersRef.current.onChunkReady.forEach((listener) => {
-          try {
-            listener(chunk);
-          } catch (error) {
-            console.error("AudioRecorderCore: Error in chunk listener:", error);
-          }
-        });
-
-        // Call configuration callback
+        this.notifyListeners("onChunkReady", chunk);
         options.onChunkReady?.(chunk);
 
         // Upload chunk if uploader is provided
@@ -136,24 +119,13 @@ export const useAudioRecorderCore = (
       }
     );
 
-    // Audio level listener
+    // Audio level listener with throttling
     const levelListener = AudioChunkRecorderEventEmitter.addListener(
       "onAudioLevel",
       (data: AudioLevelData) => {
-        setAudioLevel(data.level);
-        setHasAudio(data.hasAudio);
-
-        // Notify custom listeners
-        listenersRef.current.onAudioLevel.forEach((listener) => {
-          try {
-            listener(data);
-          } catch (error) {
-            console.error(
-              "AudioRecorderCore: Error in audio level listener:",
-              error
-            );
-          }
-        });
+        // Update state directly for audio level
+        updateState({ audioLevel: data.level, hasAudio: data.hasAudio });
+        this.notifyListeners("onAudioLevel", data);
       }
     );
 
@@ -162,22 +134,12 @@ export const useAudioRecorderCore = (
       "onError",
       (error: ErrorData) => {
         console.error("AudioRecorderCore: Native error:", error);
-
-        // Notify custom listeners
-        listenersRef.current.onError.forEach((listener) => {
-          try {
-            listener(error);
-          } catch (error) {
-            console.error("AudioRecorderCore: Error in error listener:", error);
-          }
-        });
-
-        // Call configuration callback
+        this.notifyListeners("onError", error);
         options.onError?.(error);
       }
     );
 
-    // State change listener
+    // State change listener with debouncing
     const stateListener = AudioChunkRecorderEventEmitter.addListener(
       "onStateChange",
       (state: StateChangeData) => {
@@ -185,30 +147,22 @@ export const useAudioRecorderCore = (
           "AudioRecorderCore: 🔄 State change received from native:",
           state
         );
-        console.log("AudioRecorderCore: 🔄 Previous React state:", {
-          isRecording,
-          isPaused,
-        });
 
-        setIsRecording(state.isRecording);
-        setIsPaused(state.isPaused);
-
-        console.log("AudioRecorderCore: 🔄 React state updated to:", {
+        // Update state directly for recording state
+        updateState({
           isRecording: state.isRecording,
           isPaused: state.isPaused,
         });
 
-        // Notify custom listeners
-        listenersRef.current.onStateChange.forEach((listener) => {
-          try {
-            listener(state);
-          } catch (error) {
-            console.error("AudioRecorderCore: Error in state listener:", error);
-          }
-        });
+        // Debounce state updates to prevent excessive re-renders
+        if (this.stateUpdateTimeout) {
+          clearTimeout(this.stateUpdateTimeout);
+        }
 
-        // Call configuration callback
-        options.onStateChange?.(state);
+        this.stateUpdateTimeout = setTimeout(() => {
+          this.notifyListeners("onStateChange", state);
+          options.onStateChange?.(state);
+        }, STATE_UPDATE_DEBOUNCE_MS);
       }
     );
 
@@ -217,13 +171,14 @@ export const useAudioRecorderCore = (
       "onInterruption",
       (interruption: InterruptionData) => {
         console.log("AudioRecorderCore: Interruption:", interruption);
+        this.notifyListeners("onInterruption", interruption);
 
         // Update global state
         if (interruption.type === "began") {
-          setIsInterrupted(true);
+          updateState({ isInterrupted: true });
           stateManager.setState("audioInterruption", true);
         } else if (interruption.type === "ended") {
-          setIsInterrupted(false);
+          updateState({ isInterrupted: false });
           stateManager.setState("audioInterruption", false);
         }
 
@@ -236,93 +191,154 @@ export const useAudioRecorderCore = (
           }
         } else {
           // Default interruption handling
-          handleInterruptionDefault(interruption);
+          this.handleInterruptionDefault(interruption, alertProvider);
         }
 
-        // Notify custom listeners
-        listenersRef.current.onInterruption.forEach((listener) => {
-          try {
-            listener(interruption);
-          } catch (error) {
-            console.error(
-              "AudioRecorderCore: Error in interruption listener:",
-              error
-            );
-          }
-        });
-
-        // Call configuration callback
         options.onInterruption?.(interruption);
       }
     );
 
-    // Store listeners for cleanup
-    nativeListenersRef.current = [
+    this.nativeListeners = [
       chunkListener,
       levelListener,
       errorListener,
       stateListener,
       interruptionListener,
     ];
+  }
 
-    // Cleanup
-    return () => {
-      nativeListenersRef.current.forEach((listener) => {
-        if (listener && typeof listener.remove === "function") {
-          listener.remove();
-        }
-      });
-      nativeListenersRef.current = [];
-    };
-  }, [options, stateManager]);
+  private handleInterruptionDefault(
+    interruption: InterruptionData,
+    alertProvider: any
+  ) {
+    if (interruption.type === "began") {
+      alertProvider.showAlert(
+        "Call in Progress",
+        "Recording paused due to incoming call. Recording will resume when the call ends.",
+        [{ text: "OK" }]
+      );
+    } else if (interruption.type === "audioDeviceDisconnected") {
+      alertProvider.showAlert(
+        "Audio Device Disconnected",
+        "Your audio device was disconnected. Please reconnect and try again.",
+        [{ text: "OK" }]
+      );
+    }
+  }
 
-  // Default interruption handler
-  const handleInterruptionDefault = useCallback(
-    (interruption: InterruptionData) => {
-      if (interruption.type === "began") {
-        // Show alert for phone call
-        alertProvider.showAlert(
-          "Call in Progress",
-          "Recording paused due to incoming call. Recording will resume when the call ends.",
-          [{ text: "OK" }]
-        );
-      } else if (interruption.type === "audioDeviceDisconnected") {
-        // Show alert for device disconnection
-        alertProvider.showAlert(
-          "Audio Device Disconnected",
-          "Your audio device was disconnected. Please reconnect and try again.",
-          [{ text: "OK" }]
-        );
+  cleanup() {
+    this.nativeListeners.forEach((listener) => {
+      if (listener && typeof listener.remove === "function") {
+        listener.remove();
       }
-    },
-    [alertProvider]
+    });
+    this.nativeListeners = [];
+
+    if (this.stateUpdateTimeout) {
+      clearTimeout(this.stateUpdateTimeout);
+      this.stateUpdateTimeout = null;
+    }
+  }
+}
+
+export const useAudioRecorderCore = (
+  options: AudioRecorderCoreOptions = {}
+): AudioRecorderCoreReturn => {
+  // Use provided dependencies or defaults - memoized to prevent re-creation
+  const alertProvider = useMemo(
+    () => options.alertProvider || reactNativeAlertProvider,
+    [options.alertProvider]
+  );
+  const stateManager = useMemo(
+    () => options.stateManager || createSimpleStateManager(),
+    [options.stateManager]
   );
 
-  // Auto check permissions on mount
-  useEffect(() => {
-    if (options.autoCheckPermissions !== false && serviceRef.current) {
-      checkPermissions();
-    }
-  }, [options.autoCheckPermissions]);
+  // Local state with optimized updates
+  const [state, setState] = useState({
+    isRecording: false,
+    isPaused: false,
+    hasPermission: false,
+    chunks: [] as ChunkData[],
+    audioLevel: 0,
+    hasAudio: false,
+    isAvailable: false,
+    isInterrupted: false,
+  });
 
-  // Actions
+  // Event listener manager - singleton instance
+  const eventManagerRef = useRef<EventListenerManager>();
+  if (!eventManagerRef.current) {
+    eventManagerRef.current = new EventListenerManager();
+  }
+
+  // Service ref
+  const serviceRef = useRef<AudioRecorderNative | null>(null);
+
+  // Auto start tracking
+  const autoStartAttemptedRef = useRef(false);
+
+  // Memoized state setters to prevent unnecessary re-renders
+  const updateState = useCallback((updates: Partial<typeof state>) => {
+    setState((prev) => ({ ...prev, ...updates }));
+  }, []);
+
+  // Initialize service - only once
+  useEffect(() => {
+    try {
+      serviceRef.current = NativeAudioChunkRecorder;
+      NativeAudioChunkRecorder.isAvailable()
+        .then((available) => {
+          setState((prev) => ({ ...prev, isAvailable: available }));
+        })
+        .catch((error) => {
+          console.error(
+            "AudioRecorderCore: Failed to check availability:",
+            error
+          );
+          setState((prev) => ({ ...prev, isAvailable: false }));
+        });
+    } catch (error) {
+      console.error("AudioRecorderCore: Failed to initialize service:", error);
+      setState((prev) => ({ ...prev, isAvailable: false }));
+    }
+  }, []); // Empty dependency array - only run once
+
+  // Setup native event listeners - optimized dependencies
+  useEffect(() => {
+    if (!serviceRef.current) return;
+
+    eventManagerRef.current!.setupNativeListeners(
+      options,
+      stateManager,
+      alertProvider,
+      updateState
+    );
+
+    return () => {
+      eventManagerRef.current!.cleanup();
+    };
+  }, [
+    options.onChunkReady,
+    options.onError,
+    options.onStateChange,
+    options.onInterruption,
+    options.chunkUploader,
+    options.interruptionHandler,
+    updateState,
+  ]); // Add updateState to dependencies
+
+  // Memoized actions to prevent unnecessary re-creation
   const startRecording = useCallback(
     async (recordingOptions?: RecordingOptions) => {
       console.log("AudioRecorderCore: 🚀 startRecording called");
-      console.log("AudioRecorderCore: 🚀 Current state:", {
-        isRecording,
-        isPaused,
-        hasPermission,
-        isAvailable,
-        serviceAvailable: !!serviceRef.current,
-      });
 
       if (!serviceRef.current) {
         throw new Error("AudioRecorderCore: Service not available");
       }
 
       // Check if already recording to avoid "Recording is already in progress" error
-      if (isRecording) {
+      if (state.isRecording) {
         console.log(
           "AudioRecorderCore: ⚠️ Already recording, skipping start request"
         );
@@ -349,13 +365,7 @@ export const useAudioRecorderCore = (
         throw error;
       }
     },
-    [
-      options.defaultRecordingOptions,
-      isRecording,
-      isPaused,
-      hasPermission,
-      isAvailable,
-    ]
+    [state.isRecording, options.defaultRecordingOptions]
   );
 
   const stopRecording = useCallback(async () => {
@@ -398,12 +408,12 @@ export const useAudioRecorderCore = (
   }, []);
 
   const clearChunks = useCallback(() => {
-    setChunks([]);
+    updateState({ chunks: [] });
     // Note: clearAllChunkFiles is async, but we don't await here for backwards compatibility
     serviceRef.current?.clearAllChunkFiles().catch((error: unknown) => {
       console.error("AudioRecorderCore: Failed to clear chunk files:", error);
     });
-  }, []);
+  }, [updateState]);
 
   const clearAllChunkFiles = useCallback(async () => {
     if (!serviceRef.current) {
@@ -412,12 +422,12 @@ export const useAudioRecorderCore = (
 
     try {
       await serviceRef.current.clearAllChunkFiles();
-      setChunks([]);
+      updateState({ chunks: [] });
     } catch (error) {
       console.error("AudioRecorderCore: Clear files failed:", error);
       throw error;
     }
-  }, []);
+  }, [updateState]);
 
   const checkPermissions = useCallback(async () => {
     if (!serviceRef.current) {
@@ -426,24 +436,31 @@ export const useAudioRecorderCore = (
 
     try {
       const granted = await serviceRef.current.checkPermissions();
-      setHasPermission(granted);
+      updateState({ hasPermission: granted });
     } catch (error) {
       console.error("AudioRecorderCore: Check permissions failed:", error);
-      setHasPermission(false);
+      updateState({ hasPermission: false });
       throw error;
     }
-  }, []);
+  }, [updateState]);
+
+  // Auto check permissions on mount - moved after checkPermissions definition
+  useEffect(() => {
+    if (options.autoCheckPermissions !== false && serviceRef.current) {
+      (async () => {
+        await checkPermissions();
+      })();
+    }
+  }, [options.autoCheckPermissions, checkPermissions]);
 
   // Auto start recording when conditions are met
-  const autoStartAttemptedRef = useRef(false);
-
   useEffect(() => {
     if (
       options.autoStartRecording &&
-      isAvailable &&
-      hasPermission &&
-      !isRecording &&
-      !isPaused &&
+      state.isAvailable &&
+      state.hasPermission &&
+      !state.isRecording &&
+      !state.isPaused &&
       !autoStartAttemptedRef.current &&
       serviceRef.current
     ) {
@@ -457,43 +474,43 @@ export const useAudioRecorderCore = (
     }
   }, [
     options.autoStartRecording,
-    isAvailable,
-    hasPermission,
-    isRecording,
-    isPaused,
+    state.isAvailable,
+    state.hasPermission,
+    state.isRecording,
+    state.isPaused,
     startRecording,
   ]);
 
-  // Event subscription methods
+  // Optimized event subscription methods with memoization
   const onChunkReady = useCallback((callback: (chunk: ChunkData) => void) => {
-    listenersRef.current.onChunkReady.add(callback);
+    eventManagerRef.current!.addListener("onChunkReady", callback);
     return () => {
-      listenersRef.current.onChunkReady.delete(callback);
+      eventManagerRef.current!.removeListener("onChunkReady", callback);
     };
   }, []);
 
   const onAudioLevel = useCallback(
     (callback: (levelData: AudioLevelData) => void) => {
-      listenersRef.current.onAudioLevel.add(callback);
+      eventManagerRef.current!.addListener("onAudioLevel", callback);
       return () => {
-        listenersRef.current.onAudioLevel.delete(callback);
+        eventManagerRef.current!.removeListener("onAudioLevel", callback);
       };
     },
     []
   );
 
   const onError = useCallback((callback: (error: ErrorData) => void) => {
-    listenersRef.current.onError.add(callback);
+    eventManagerRef.current!.addListener("onError", callback);
     return () => {
-      listenersRef.current.onError.delete(callback);
+      eventManagerRef.current!.removeListener("onError", callback);
     };
   }, []);
 
   const onInterruption = useCallback(
     (callback: (interruption: InterruptionData) => void) => {
-      listenersRef.current.onInterruption.add(callback);
+      eventManagerRef.current!.addListener("onInterruption", callback);
       return () => {
-        listenersRef.current.onInterruption.delete(callback);
+        eventManagerRef.current!.removeListener("onInterruption", callback);
       };
     },
     []
@@ -501,42 +518,69 @@ export const useAudioRecorderCore = (
 
   const onStateChange = useCallback(
     (callback: (state: StateChangeData) => void) => {
-      listenersRef.current.onStateChange.add(callback);
+      eventManagerRef.current!.addListener("onStateChange", callback);
       return () => {
-        listenersRef.current.onStateChange.delete(callback);
+        eventManagerRef.current!.removeListener("onStateChange", callback);
       };
     },
     []
   );
 
-  return {
-    // Service
-    service: serviceRef.current,
+  // Memoized return object to prevent unnecessary re-renders
+  const returnValue = useMemo<AudioRecorderCoreReturn>(
+    () => ({
+      // Service
+      service: serviceRef.current,
 
-    // State
-    isRecording,
-    isPaused,
-    hasPermission,
-    chunks,
-    audioLevel,
-    hasAudio,
-    isAvailable,
-    isInterrupted,
+      // State
+      isRecording: state.isRecording,
+      isPaused: state.isPaused,
+      hasPermission: state.hasPermission,
+      chunks: state.chunks,
+      audioLevel: state.audioLevel,
+      hasAudio: state.hasAudio,
+      isAvailable: state.isAvailable,
+      isInterrupted: state.isInterrupted,
 
-    // Actions
-    startRecording,
-    stopRecording,
-    pauseRecording,
-    resumeRecording,
-    clearChunks,
-    clearAllChunkFiles,
-    checkPermissions,
+      // Actions
+      startRecording,
+      stopRecording,
+      pauseRecording,
+      resumeRecording,
+      clearChunks,
+      clearAllChunkFiles,
+      checkPermissions,
 
-    // Event handlers
-    onChunkReady,
-    onAudioLevel,
-    onError,
-    onInterruption,
-    onStateChange,
-  };
+      // Event handlers
+      onChunkReady,
+      onAudioLevel,
+      onError,
+      onInterruption,
+      onStateChange,
+    }),
+    [
+      state.isRecording,
+      state.isPaused,
+      state.hasPermission,
+      state.chunks,
+      state.audioLevel,
+      state.hasAudio,
+      state.isAvailable,
+      state.isInterrupted,
+      startRecording,
+      stopRecording,
+      pauseRecording,
+      resumeRecording,
+      clearChunks,
+      clearAllChunkFiles,
+      checkPermissions,
+      onChunkReady,
+      onAudioLevel,
+      onError,
+      onInterruption,
+      onStateChange,
+    ]
+  );
+
+  return returnValue;
 };
