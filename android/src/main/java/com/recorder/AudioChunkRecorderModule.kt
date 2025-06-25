@@ -1,4 +1,4 @@
-package com.recorder.bridge
+package com.recorder
 
 import com.recorder.engine.RecorderEngine
 import com.recorder.rotation.RotationManager
