@@ -267,7 +267,7 @@ export const useAudioRecorderCore = (
   });
 
   // Event listener manager - singleton instance
-  const eventManagerRef = useRef<EventListenerManager>();
+  const eventManagerRef = useRef<EventListenerManager | null>(null);
   if (!eventManagerRef.current) {
     eventManagerRef.current = new EventListenerManager();
   }
