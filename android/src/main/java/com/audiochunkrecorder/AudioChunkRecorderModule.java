@@ -6,8 +6,6 @@ import android.content.pm.PackageManager;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
-import android.os.Handler;
-import android.os.Looper;
 import android.util.Log;
 
 import androidx.core.app.ActivityCompat;
@@ -21,444 +19,324 @@ import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
-import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.FileOutputStream;
+import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.Queue;
 import java.util.Timer;
 import java.util.TimerTask;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * AudioChunkRecorderModule
+ * 
+ * Complete implementation with continuous buffer reading to avoid
+ * audio levels always being 0.
+ */
 public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     private static final String TAG = "AudioChunkRecorder";
-    private static final int SAMPLE_RATE = 44100;
-    private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
-    private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
-    
-    // Performance constants
-    private static final int BUFFER_SIZE = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
-    private static final int AUDIO_LEVEL_UPDATE_INTERVAL = 200; // ms - reduced from 100ms
-    private static final double AUDIO_LEVEL_THRESHOLD = 0.15;
-    private static final double AUDIO_LEVEL_NORMALIZATION_FACTOR = 3000.0;
-    
-    // Recording state
+
+    private static final int SAMPLE_RATE     = 16000; // Standard for voice recording
+    private static final int CHANNEL_CONFIG  = AudioFormat.CHANNEL_IN_MONO;
+    private static final int AUDIO_FORMAT    = AudioFormat.ENCODING_PCM_16BIT;
+
+    // -------------------------------------------------------
+    //  Recording state and configuration
+    // -------------------------------------------------------
     private AudioRecord audioRecord;
     private volatile boolean isRecording = false;
-    private volatile boolean isPaused = false;
-    private AtomicInteger currentChunkIndex = new AtomicInteger(0);
+    private volatile boolean isPaused    = false;
+
+    private final AtomicInteger currentChunkIndex = new AtomicInteger(0);
+    private double   chunkDuration   = 30.0; // seconds (default 30)
+
     private Timer chunkTimer;
-    private File recordingDirectory;
-    private Thread recordingThread;
-    private double chunkDuration = 30.0; // Default 30 seconds to match iOS
-    
-    // Thread safety - using atomic operations where possible
-    private final Object stateLock = new Object();
-    private AtomicBoolean shouldStopThread = new AtomicBoolean(false);
-    
-    // Audio level monitoring with performance optimizations
-    private Handler audioLevelHandler;
-    private Runnable audioLevelRunnable;
-    private volatile double currentAudioLevel = 0.0;
-    private long lastAudioLevelUpdate = 0;
-    
-    // Chunk timing
-    private volatile long chunkStartTime = 0;
-    private volatile double accumulatedRecordingTime = 0.0;
-    
-    // Performance optimizations - Buffer reuse
-    private final byte[] recordingBuffer = new byte[BUFFER_SIZE];
-    private final short[] audioLevelBuffer = new short[BUFFER_SIZE / 2]; // 16-bit samples
-    private final WritableMap reusableStateMap = Arguments.createMap();
-    private final WritableMap reusableAudioLevelMap = Arguments.createMap();
-    private final WritableMap reusableChunkMap = Arguments.createMap();
-    private final WritableMap reusableErrorMap = Arguments.createMap();
-    
-    // File I/O optimization
-    private BufferedOutputStream currentFileStream;
-    
+    private File  recordingDirectory;
+
+    // Audio level
+    private volatile double lastAudioLevel = 0.0;          // 0.0 – 1.0
+    private static final double AUDIO_LEVEL_DELTA = 0.02;  // threshold for emitting events
+
+    // Audio data collection
+    private ByteArrayOutputStream audioDataBuffer;
+    private final Object audioDataLock = new Object();
+
+    // Continuous reading
+    private ExecutorService recorderExecutor;
+
+    // Synchronization
+    private final Object stateLock  = new Object();
+    private final Object mapPoolLock = new Object();
+
+    // -------------------------------------------------------
+    //  Map pools to reduce allocations
+    // -------------------------------------------------------
+    private final Queue<WritableMap> stateMapPool = new ConcurrentLinkedQueue<>();
+    private final Queue<WritableMap> errorMapPool = new ConcurrentLinkedQueue<>();
+    private final Queue<WritableMap> chunkMapPool = new ConcurrentLinkedQueue<>();
+
+    // -------------------------------------------------------
+    //  Constructor
+    // -------------------------------------------------------
     public AudioChunkRecorderModule(ReactApplicationContext reactContext) {
         super(reactContext);
         setupRecordingDirectory();
-        Log.i(TAG, "AudioChunkRecorderModule initialized with performance optimizations");
+        initializeMapPool();
+        Log.i(TAG, "AudioChunkRecorderModule initialized");
     }
-    
+
     @Override
-    public String getName() {
-        return "AudioChunkRecorder";
-    }
-    
+    public String getName() { return "AudioChunkRecorder"; }
+
+    /* ==============================================================
+     *                AUXILIARY METHODS (directories, pools)
+     * ============================================================== */
+
     private void setupRecordingDirectory() {
-        Context context = getReactApplicationContext();
-        recordingDirectory = new File(context.getFilesDir(), "AudioChunks");
-        if (!recordingDirectory.exists()) {
-            recordingDirectory.mkdirs();
-        }
-        Log.i(TAG, "Recording directory: " + recordingDirectory.getAbsolutePath());
+        Context ctx = getReactApplicationContext();
+        recordingDirectory = new File(ctx.getFilesDir(), "AudioChunks");
+        if (!recordingDirectory.exists()) recordingDirectory.mkdirs();
     }
-    
-    private boolean checkPermissions() {
-        return ActivityCompat.checkSelfPermission(
-            getReactApplicationContext(),
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED;
-    }
-    
-    // Optimized event sending with reusable maps
-    private void sendEvent(String eventName, WritableMap params) {
-        try {
-            ReactApplicationContext context = getReactApplicationContext();
-            if (context != null && context.hasActiveCatalystInstance()) {
-                context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-                       .emit(eventName, params);
-            } else {
-                Log.w(TAG, "Cannot send event " + eventName + " - no active React context");
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Error sending event " + eventName + ": " + e.getMessage());
+
+    private void initializeMapPool() {
+        for (int i = 0; i < 5; i++) {
+            stateMapPool.offer(Arguments.createMap());
+            errorMapPool.offer(Arguments.createMap());
+            chunkMapPool.offer(Arguments.createMap());
         }
     }
-    
-    // Optimized state change event with reusable map
+
+    private WritableMap getStateMap() {
+        WritableMap m = stateMapPool.poll();
+        return m != null ? m : Arguments.createMap();
+    }
+
+    private WritableMap getErrorMap() {
+        WritableMap m = errorMapPool.poll();
+        return m != null ? m : Arguments.createMap();
+    }
+
+    private WritableMap getChunkMap() {
+        WritableMap m = chunkMapPool.poll();
+        return m != null ? m : Arguments.createMap();
+    }
+
+    /* ==============================================================
+     *                SENDING EVENTS TO JAVASCRIPT
+     * ============================================================== */
+
+    private void sendEvent(String name, WritableMap params) {
+        ReactApplicationContext ctx = getReactApplicationContext();
+        if (ctx != null && ctx.hasActiveCatalystInstance()) {
+            ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+               .emit(name, params);
+        } else {
+            Log.w(TAG, "React context not ready → event " + name + " lost");
+        }
+    }
+
     private void sendStateChangeEvent() {
-        synchronized (reusableStateMap) {
-            reusableStateMap.putBoolean("isRecording", isRecording);
-            reusableStateMap.putBoolean("isPaused", isPaused);
-            sendEvent("onStateChange", reusableStateMap);
+        WritableMap map = getStateMap();
+        synchronized (stateLock) {
+            map.putBoolean("isRecording", isRecording);
+            map.putBoolean("isPaused",    isPaused);
         }
+        sendEvent("onStateChange", map);
     }
-    
-    // Optimized error event with reusable map
+
     private void sendErrorEvent(String message) {
-        synchronized (reusableErrorMap) {
-            reusableErrorMap.putString("message", message);
-            sendEvent("onError", reusableErrorMap);
-        }
+        WritableMap map = getErrorMap();
+        map.putString("message", message);
+        sendEvent("onError", map);
     }
-    
+
+    private void sendAudioLevelEvent(double level) {
+        WritableMap map = Arguments.createMap();
+        map.putDouble("level", level);
+        map.putBoolean("hasAudio", level > 0.01);
+        sendEvent("onAudioLevel", map);
+    }
+
+    /* ==============================================================
+     *      METHODS EXPOSED TO REACT NATIVE (public API)
+     * ============================================================== */
+
     @ReactMethod
     public void startRecording(ReadableMap options, Promise promise) {
         if (isRecording) {
             promise.reject("already_recording", "Recording is already in progress");
             return;
         }
-        
         if (!checkPermissions()) {
             promise.reject("permission_denied", "Audio recording permission not granted");
             return;
         }
-        
-        // Parse options
+
         int sampleRate = options.hasKey("sampleRate") ? options.getInt("sampleRate") : SAMPLE_RATE;
-        double chunkSeconds = options.hasKey("chunkSeconds") ? options.getDouble("chunkSeconds") : 30.0;
-        
-        this.chunkDuration = chunkSeconds;
-        
+        chunkDuration  = options.hasKey("chunkSeconds") ? options.getDouble("chunkSeconds") : 30.0;
+
         try {
             startNewChunk(sampleRate);
             promise.resolve("Recording started");
-            Log.i(TAG, "Recording started successfully");
         } catch (Exception e) {
             Log.e(TAG, "Failed to start recording", e);
             promise.reject("start_failed", e.getMessage());
         }
     }
-    
+
     @ReactMethod
     public void stopRecording(Promise promise) {
         if (!isRecording) {
             promise.reject("not_recording", "No recording in progress");
             return;
         }
-        
         try {
-            // Signal thread to stop
-            shouldStopThread.set(true);
-            
-            // Cancel chunk timer
-            if (chunkTimer != null) {
-                chunkTimer.cancel();
-                chunkTimer = null;
+            stopCaptureLoop();
+
+            if (chunkTimer != null) { chunkTimer.cancel(); chunkTimer = null; }
+            if (!isPaused) finishCurrentChunk();
+
+            if (audioRecord != null) { audioRecord.release(); audioRecord = null; }
+
+            synchronized (stateLock) {
+                isRecording = false;
+                isPaused    = false;
             }
-            
-            // Finish current chunk only if not paused
-            if (!isPaused) {
-                finishCurrentChunk();
-            }
-            
-            // Release AudioRecord
-            if (audioRecord != null) {
-                audioRecord.release();
-                audioRecord = null;
-            }
-            
-            // Wait for recording thread to finish
-            if (recordingThread != null && recordingThread.isAlive()) {
-                try {
-                    recordingThread.join(1000); // Wait up to 1 second
-                } catch (InterruptedException e) {
-                    Log.w(TAG, "Interrupted while waiting for recording thread");
-                }
-                recordingThread = null;
-            }
-            
-            // Update state
-            isRecording = false;
-            isPaused = false;
-            
-            // Reset thread stop flag
-            shouldStopThread.set(false);
-            
-            // Stop audio level monitoring
-            stopAudioLevelMonitoring();
-            
-            // Send state change event
             sendStateChangeEvent();
-            
             promise.resolve("Recording stopped");
-            Log.i(TAG, "Recording stopped successfully");
         } catch (Exception e) {
             Log.e(TAG, "Error stopping recording", e);
-            promise.reject("stop_failed", "Failed to stop recording: " + e.getMessage());
+            promise.reject("stop_failed", e.getMessage());
         }
     }
-    
+
     @ReactMethod
     public void pauseRecording(Promise promise) {
         if (!isRecording || isPaused) {
-            promise.reject("invalid_state", "Cannot pause - not recording or already paused");
+            promise.reject("invalid_state", "Cannot pause");
             return;
         }
-        
         try {
-            // Stop AudioRecord
-            if (audioRecord != null) {
-                audioRecord.stop();
-            }
-            
-            // Cancel chunk timer
-            if (chunkTimer != null) {
-                chunkTimer.cancel();
-                chunkTimer = null;
-            }
-            
-            // Update state
+            if (audioRecord != null) audioRecord.stop();
+            if (chunkTimer  != null) { chunkTimer.cancel(); chunkTimer = null; }
             isPaused = true;
-            
-            // Stop audio level monitoring when paused
-            stopAudioLevelMonitoring();
-            
-            // Send state change event
             sendStateChangeEvent();
-            
             promise.resolve("Recording paused");
-            Log.i(TAG, "Recording paused successfully");
         } catch (Exception e) {
-            Log.e(TAG, "Error pausing recording", e);
-            promise.reject("pause_failed", "Failed to pause recording: " + e.getMessage());
+            promise.reject("pause_failed", e.getMessage());
         }
     }
-    
+
     @ReactMethod
     public void resumeRecording(Promise promise) {
         if (!isRecording || !isPaused) {
-            promise.reject("invalid_state", "Cannot resume - not recording or not paused");
+            promise.reject("invalid_state", "Cannot resume");
             return;
         }
-        
         try {
-            // Resume AudioRecord
-            if (audioRecord != null) {
-                audioRecord.startRecording();
-            }
-            
-            // Update state
+            if (audioRecord != null) audioRecord.startRecording();
             isPaused = false;
-            
-            // Restart chunk timer
             scheduleRotation(chunkDuration);
-            
-            // Restart audio level monitoring when resumed
-            startAudioLevelMonitoring();
-            
-            // Send state change event
             sendStateChangeEvent();
-            
             promise.resolve("Recording resumed");
-            Log.i(TAG, "Recording resumed successfully");
         } catch (Exception e) {
-            Log.e(TAG, "Error resuming recording", e);
-            promise.reject("resume_failed", "Failed to resume recording: " + e.getMessage());
+            promise.reject("resume_failed", e.getMessage());
         }
     }
-    
+
+    /* -------------  query/permission utilities ------------- */
+
     @ReactMethod
-    public void checkPermissions(Promise promise) {
-        try {
-            boolean hasRecordPermission = ActivityCompat.checkSelfPermission(
-                getReactApplicationContext(),
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED;
-            
-            promise.resolve(hasRecordPermission);
-            Log.i(TAG, "checkPermissions: " + hasRecordPermission);
-        } catch (Exception e) {
-            Log.e(TAG, "Error checking permissions", e);
-            promise.reject("PERMISSION_ERROR", "Error checking permissions: " + e.getMessage());
-        }
-    }
-    
+    public void checkPermissions(Promise promise) { promise.resolve(checkPermissions()); }
+
     @ReactMethod
-    public void isAvailable(Promise promise) {
-        try {
-            promise.resolve(true);
-            Log.i(TAG, "isAvailable: true");
-        } catch (Exception e) {
-            promise.reject("ERROR", "Error en isAvailable: " + e.getMessage());
-        }
-    }
-    
+    public void isAvailable(Promise promise) { promise.resolve(true); }
+
     @ReactMethod
-    public void isRecording(Promise promise) {
-        try {
-            synchronized (stateLock) {
-                promise.resolve(isRecording);
-                Log.i(TAG, "isRecording: " + isRecording);
-            }
-        } catch (Exception e) {
-            promise.reject("ERROR", "Error en isRecording: " + e.getMessage());
-        }
-    }
-    
+    public void isRecording(Promise promise) { promise.resolve(isRecording); }
+
     @ReactMethod
-    public void isPaused(Promise promise) {
-        try {
-            synchronized (stateLock) {
-                promise.resolve(isPaused);
-                Log.i(TAG, "isPaused: " + isPaused);
-            }
-        } catch (Exception e) {
-            promise.reject("ERROR", "Error en isPaused: " + e.getMessage());
-        }
-    }
-    
+    public void isPaused(Promise promise) { promise.resolve(isPaused); }
+
     @ReactMethod
-    public void getAudioLevel(Promise promise) {
-        try {
-            promise.resolve(currentAudioLevel);
-            Log.i(TAG, "getAudioLevel: " + currentAudioLevel);
-        } catch (Exception e) {
-            promise.reject("ERROR", "Error en getAudioLevel: " + e.getMessage());
-        }
-    }
-    
+    public void getAudioLevel(Promise promise) { promise.resolve(lastAudioLevel); }
+
     @ReactMethod
-    public void hasAudioSession(Promise promise) {
-        try {
-            promise.resolve(true);
-            Log.i(TAG, "hasAudioSession: true (mock)");
-        } catch (Exception e) {
-            promise.reject("ERROR", "Error en hasAudioSession: " + e.getMessage());
-        }
-    }
-    
+    public void hasAudioSession(Promise promise) { promise.resolve(true); }
+
     @ReactMethod
-    public void getCurrentChunkIndex(Promise promise) {
-        try {
-            promise.resolve(currentChunkIndex.get());
-            Log.i(TAG, "getCurrentChunkIndex: " + currentChunkIndex.get());
-        } catch (Exception e) {
-            promise.reject("ERROR", "Error en getCurrentChunkIndex: " + e.getMessage());
-        }
-    }
-    
+    public void getCurrentChunkIndex(Promise promise) { promise.resolve(currentChunkIndex.get()); }
+
     @ReactMethod
-    public void getChunkDuration(Promise promise) {
-        try {
-            promise.resolve(chunkDuration);
-            Log.i(TAG, "getChunkDuration: " + chunkDuration);
-        } catch (Exception e) {
-            promise.reject("ERROR", "Error en getChunkDuration: " + e.getMessage());
-        }
-    }
-    
+    public void getChunkDuration(Promise promise) { promise.resolve(chunkDuration); }
+
     @ReactMethod
     public void getRecordingState(Promise promise) {
-        try {
-            WritableMap state = Arguments.createMap();
-            synchronized (stateLock) {
-                state.putBoolean("isRecording", isRecording);
-                state.putBoolean("isPaused", isPaused);
-            }
-            state.putBoolean("isAvailable", true);
-            state.putBoolean("hasPermission", checkPermissions());
-            state.putInt("currentChunkIndex", currentChunkIndex.get());
-            state.putDouble("chunkDuration", chunkDuration);
-            state.putDouble("audioLevel", currentAudioLevel);
-            
-            promise.resolve(state);
-            Log.i(TAG, "getRecordingState called - isRecording: " + isRecording + ", isPaused: " + isPaused);
-        } catch (Exception e) {
-            promise.reject("STATE_ERROR", "Error getting recording state: " + e.getMessage());
+        WritableMap state = Arguments.createMap();
+        synchronized (stateLock) {
+            state.putBoolean("isRecording", isRecording);
+            state.putBoolean("isPaused",    isPaused);
         }
+        state.putBoolean("isAvailable", true);
+        state.putBoolean("hasPermission", checkPermissions());
+        state.putInt("currentChunkIndex", currentChunkIndex.get());
+        state.putDouble("chunkDuration", chunkDuration);
+        state.putDouble("audioLevel", lastAudioLevel);
+        promise.resolve(state);
     }
-    
+
     @ReactMethod
     public void clearAllChunkFiles(Promise promise) {
         try {
             File[] files = recordingDirectory.listFiles();
             int deletedCount = 0;
-            
             if (files != null) {
-                for (File file : files) {
-                    String fileName = file.getName();
-                    // Delete files that start with "chunk_" and end with ".wav"
-                    if (fileName.startsWith("chunk_") && fileName.endsWith(".wav")) {
-                        if (file.delete()) {
-                            deletedCount++;
-                        } else {
-                            Log.w(TAG, "Failed to delete chunk file: " + fileName);
-                        }
+                for (File f : files) {
+                    String n = f.getName();
+                    if (n.startsWith("chunk_") && n.endsWith(".wav")) {
+                        if (f.delete()) deletedCount++;
                     }
                 }
             }
-            
-            // Reset chunk index
             currentChunkIndex.set(0);
-            
-            String message = "Deleted " + deletedCount + " chunk files";
-            promise.resolve(message);
-            Log.i(TAG, message);
+            promise.resolve("Deleted " + deletedCount + " chunk files");
         } catch (Exception e) {
-            Log.e(TAG, "Error clearing chunk files", e);
-            promise.reject("FILE_ERROR", "Could not clear chunk files: " + e.getMessage());
+            promise.reject("FILE_ERROR", e.getMessage());
         }
     }
-    
+
     @ReactMethod
     public void getModuleInfo(Promise promise) {
-        try {
-            WritableMap info = Arguments.createMap();
-            info.putString("name", "AudioChunkRecorder");
-            info.putString("version", "1.0.0-full");
-            info.putString("platform", "Android");
-            info.putBoolean("isSimplified", false);
-            info.putBoolean("hasAudioLevelMonitoring", true);
-            info.putBoolean("hasChunkSupport", true);
-            info.putInt("sampleRate", SAMPLE_RATE);
-            info.putString("audioFormat", "PCM_16BIT");
-            info.putString("channelConfig", "MONO");
-            
-            promise.resolve(info);
-            Log.i(TAG, "getModuleInfo called successfully - Full implementation");
-        } catch (Exception e) {
-            promise.reject("INFO_ERROR", "Error en getModuleInfo: " + e.getMessage());
-        }
+        WritableMap info = Arguments.createMap();
+        info.putString("name", "AudioChunkRecorder");
+        info.putString("version", "1.0.0-full");
+        info.putString("platform", "Android");
+        info.putBoolean("isSimplified", false);
+        info.putBoolean("hasAudioLevelMonitoring", true);
+        info.putBoolean("hasChunkSupport", true);
+        info.putInt("sampleRate", SAMPLE_RATE);
+        info.putString("audioFormat", "PCM_16BIT");
+        info.putString("channelConfig", "MONO");
+        promise.resolve(info);
     }
-    
-    // Private helper methods for recording
+
+    /* ==============================================================
+     *            CAPTURE AND CHUNK ROTATION (core)
+     * ============================================================== */
+
     private void startNewChunk(int sampleRate) throws Exception {
         int bufferSize = AudioRecord.getMinBufferSize(sampleRate, CHANNEL_CONFIG, AUDIO_FORMAT);
+        
+        // Ensure minimum buffer size
+        if (bufferSize == AudioRecord.ERROR_BAD_VALUE) {
+            throw new Exception("Invalid audio configuration");
+        }
         
         audioRecord = new AudioRecord(
             MediaRecorder.AudioSource.MIC,
@@ -474,285 +352,221 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         
         audioRecord.startRecording();
         isRecording = true;
-        isPaused = false;
-        
-        // Reset timing for this new chunk
-        accumulatedRecordingTime = 0.0;
-        chunkStartTime = System.currentTimeMillis();
+        isPaused    = false;
 
-        // Start recording thread
-        recordingThread = new Thread(new RecordingRunnable());
-        recordingThread.start();
-
-        // Start timer for this chunk
-        scheduleRotation(chunkDuration);
-        
-        // Start audio level monitoring (safely)
-        startAudioLevelMonitoring();
-        
-        // Send state change event
-        sendStateChangeEvent();
-        
-        Log.i(TAG, "Started recording chunk " + currentChunkIndex.get());
-    }
-    
-    private void scheduleRotation(double delaySeconds) {
-        if (chunkTimer != null) {
-            chunkTimer.cancel();
-            chunkTimer = null;
+        // Initialize audio data buffer
+        synchronized (audioDataLock) {
+            audioDataBuffer = new ByteArrayOutputStream();
         }
+
+        startCaptureLoop(bufferSize, sampleRate);
+        scheduleRotation(chunkDuration);
+        sendStateChangeEvent();
+    }
+
+    /* --------  continuous buffer reading (main FIX)  -------- */
+
+    private void startCaptureLoop(int bufferSize, int sampleRate) {
+        if (recorderExecutor == null || recorderExecutor.isShutdown()) {
+            recorderExecutor = Executors.newSingleThreadExecutor();
+        }
+        final short[] buffer = new short[Math.max(256, bufferSize)];
+
+        recorderExecutor.execute(() -> {
+            while (isRecording) {
+                if (isPaused || audioRecord == null) {
+                    try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+                    continue;
+                }
+
+                int read = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M ?
+                        audioRecord.read(buffer, 0, buffer.length, AudioRecord.READ_BLOCKING) :
+                        audioRecord.read(buffer, 0, buffer.length);
+
+                if (read <= 0) continue;
+
+                // Collect audio data for WAV file
+                synchronized (audioDataLock) {
+                    if (audioDataBuffer != null) {
+                        // Convert short[] to bytes (little-endian)
+                        ByteBuffer byteBuffer = ByteBuffer.allocate(read * 2);
+                        byteBuffer.order(ByteOrder.LITTLE_ENDIAN);
+                        for (int i = 0; i < read; i++) {
+                            byteBuffer.putShort(buffer[i]);
+                        }
+                        try {
+                            audioDataBuffer.write(byteBuffer.array());
+                        } catch (IOException e) {
+                            Log.e(TAG, "Error writing to audio buffer: " + e.getMessage());
+                        }
+                    }
+                }
+
+                double sum = 0;
+                for (int i = 0; i < read; i++) sum += buffer[i] * buffer[i];
+                double rms = Math.sqrt(sum / read) / 32768.0;
+                if (rms > 1.0) rms = 1.0;
+
+                if (Math.abs(rms - lastAudioLevel) >= AUDIO_LEVEL_DELTA) {
+                    lastAudioLevel = rms;
+                    sendAudioLevelEvent(rms);
+                }
+            }
+        });
+    }
+
+    private void stopCaptureLoop() {
+        isRecording = false; // makes the loop terminate
+        if (recorderExecutor != null && !recorderExecutor.isShutdown()) {
+            recorderExecutor.shutdownNow();
+        }
+        // Clear audio data buffer
+        synchronized (audioDataLock) {
+            if (audioDataBuffer != null) {
+                try { audioDataBuffer.close(); } catch (IOException ignored) {}
+                audioDataBuffer = null;
+            }
+        }
+    }
+
+    /* -------------------------- rotation --------------------------- */
+
+    private void scheduleRotation(double delaySeconds) {
+        if (chunkTimer != null) chunkTimer.cancel();
         chunkTimer = new Timer();
         long delayMs = (long) (delaySeconds * 1000);
-        Log.i(TAG, "Scheduling chunk rotation in " + delayMs + "ms (" + delaySeconds + "s)");
         chunkTimer.schedule(new TimerTask() {
-            @Override
-            public void run() {
-                Log.i(TAG, "Chunk timer fired - finishing current chunk");
+            @Override public void run() {
                 if (isRecording && !isPaused) {
                     finishCurrentChunk();
-                    try {
-                        startNewChunk(SAMPLE_RATE);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to start new chunk", e);
-                        sendErrorEvent(e.getMessage());
+                    try { 
+                        // Use the same sample rate as the current recording
+                        int currentSampleRate = SAMPLE_RATE;
+                        try {
+                            if (audioRecord != null) {
+                                currentSampleRate = audioRecord.getSampleRate();
+                            }
+                        } catch (Exception e) {
+                            Log.w(TAG, "Could not get current sample rate, using default");
+                        }
+                        startNewChunk(currentSampleRate); 
                     }
+                    catch (Exception e) { sendErrorEvent(e.getMessage()); }
                 }
             }
         }, delayMs);
     }
-    
-    private void startChunkTimer() {
-        // This method is deprecated, use scheduleRotation instead
-        scheduleRotation(chunkDuration);
-    }
-    
+
     private void finishCurrentChunk() {
         if (audioRecord != null && isRecording && !isPaused) {
             audioRecord.stop();
-            
             String fileName = "chunk_" + currentChunkIndex.get() + ".wav";
             File file = new File(recordingDirectory, fileName);
             
-            // Use reusable chunk map for better performance
-            synchronized (reusableChunkMap) {
-                reusableChunkMap.putString("uri", file.getAbsolutePath());
-                reusableChunkMap.putString("path", file.getAbsolutePath());
-                reusableChunkMap.putInt("seq", currentChunkIndex.get());
-                sendEvent("onChunkReady", reusableChunkMap);
-            }
-            
-            currentChunkIndex.incrementAndGet();
-            Log.i(TAG, "Finished chunk " + (currentChunkIndex.get() - 1));
-        }
-    }
-    
-    // Optimized audio level monitoring with throttling
-    private void startAudioLevelMonitoring() {
-        try {
-            if (audioLevelHandler == null) {
-                if (Looper.getMainLooper() != null) {
-                    audioLevelHandler = new Handler(Looper.getMainLooper());
-                } else {
-                    Log.w(TAG, "Main looper not available, skipping audio level monitoring");
-                    return;
-                }
-            }
-            
-            if (audioLevelRunnable != null) {
-                audioLevelHandler.removeCallbacks(audioLevelRunnable);
-            }
-            
-            audioLevelRunnable = new Runnable() {
-                @Override
-                public void run() {
-                    if (isRecording && !isPaused && audioRecord != null && audioLevelHandler != null) {
-                        updateAudioLevel();
-                        audioLevelHandler.postDelayed(this, AUDIO_LEVEL_UPDATE_INTERVAL);
-                    }
-                }
-            };
-            
-            audioLevelHandler.post(audioLevelRunnable);
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to start audio level monitoring: " + e.getMessage());
-        }
-    }
-    
-    private void stopAudioLevelMonitoring() {
-        if (audioLevelRunnable != null && audioLevelHandler != null) {
+            // Write WAV file with actual audio data
             try {
-                audioLevelHandler.removeCallbacks(audioLevelRunnable);
-            } catch (Exception e) {
-                Log.w(TAG, "Error removing audio level callbacks: " + e.getMessage());
-            }
-            audioLevelRunnable = null;
-        }
-        
-        // Send zero level when stopping
-        try {
-            synchronized (reusableAudioLevelMap) {
-                reusableAudioLevelMap.putDouble("level", 0.0);
-                reusableAudioLevelMap.putBoolean("hasAudio", false);
-                reusableAudioLevelMap.putDouble("averagePower", 0.0);
-                sendEvent("onAudioLevel", reusableAudioLevelMap);
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Error sending final audio level: " + e.getMessage());
-        }
-    }
-    
-    // Optimized audio level update with throttling
-    private void updateAudioLevel() {
-        if (audioRecord == null || audioRecord.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
-            return;
-        }
-        
-        // Throttle updates to avoid excessive event emission
-        long currentTime = System.currentTimeMillis();
-        if (currentTime - lastAudioLevelUpdate < AUDIO_LEVEL_UPDATE_INTERVAL) {
-            return;
-        }
-        lastAudioLevelUpdate = currentTime;
-        
-        // Read audio data to calculate level using reusable buffer
-        int bytesRead = audioRecord.read(audioLevelBuffer, 0, audioLevelBuffer.length);
-        
-        if (bytesRead > 0) {
-            // Calculate RMS (Root Mean Square) for audio level
-            long sum = 0;
-            for (int i = 0; i < bytesRead; i++) {
-                sum += audioLevelBuffer[i] * audioLevelBuffer[i];
-            }
-            
-            double rms = Math.sqrt(sum / (double) bytesRead);
-            
-            // Convert to normalized level (0.0 to 1.0)
-            double normalizedLevel = Math.min(1.0, rms / AUDIO_LEVEL_NORMALIZATION_FACTOR);
-            boolean hasAudio = normalizedLevel > AUDIO_LEVEL_THRESHOLD;
-            
-            currentAudioLevel = normalizedLevel;
-            
-            // Use reusable map for better performance
-            synchronized (reusableAudioLevelMap) {
-                reusableAudioLevelMap.putDouble("level", normalizedLevel);
-                reusableAudioLevelMap.putBoolean("hasAudio", hasAudio);
-                reusableAudioLevelMap.putDouble("averagePower", rms);
-                sendEvent("onAudioLevel", reusableAudioLevelMap);
-            }
-        }
-    }
-    
-    // Optimized recording thread with better I/O performance
-    private class RecordingRunnable implements Runnable {
-        @Override
-        public void run() {
-            String fileName = "chunk_" + currentChunkIndex.get() + ".wav";
-            File file = new File(recordingDirectory, fileName);
-            
-            try (BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(file), BUFFER_SIZE * 2)) {
-                int bytesRead;
-                while (!shouldStopThread.get()) {
-                    // Check state without synchronization when possible
-                    if (!isRecording || shouldStopThread.get()) {
-                        break;
-                    }
-                    
-                    if (isPaused) {
-                        // Wait a bit when paused to avoid busy waiting
-                        try {
-                            Thread.sleep(50);
-                        } catch (InterruptedException e) {
-                            Log.w(TAG, "Recording thread interrupted");
-                            break;
-                        }
-                        continue;
-                    }
-                    
-                    if (audioRecord != null) {
-                        bytesRead = audioRecord.read(recordingBuffer, 0, recordingBuffer.length);
-                        if (bytesRead > 0) {
-                            bos.write(recordingBuffer, 0, bytesRead);
-                        }
-                    }
+                byte[] audioData;
+                synchronized (audioDataLock) {
+                    audioData = audioDataBuffer != null ? audioDataBuffer.toByteArray() : new byte[0];
+                    audioDataBuffer = new ByteArrayOutputStream(); // Reset for next chunk
                 }
                 
-                // Ensure all data is written
-                bos.flush();
+                // Get the actual sample rate from the current recording
+                int actualSampleRate = SAMPLE_RATE; // Default fallback
+                try {
+                    actualSampleRate = audioRecord.getSampleRate();
+                } catch (Exception e) {
+                    Log.w(TAG, "Could not get sample rate, using default: " + SAMPLE_RATE);
+                }
+                writeWavFile(file, audioData, actualSampleRate);
             } catch (IOException e) {
-                Log.e(TAG, "Error writing audio data", e);
-                sendErrorEvent("Error writing audio data: " + e.getMessage());
+                Log.e(TAG, "Error writing WAV file: " + e.getMessage());
             }
             
-            Log.i(TAG, "Recording thread finished");
+            synchronized (mapPoolLock) {
+                WritableMap map = getChunkMap();
+                map.putString("uri",  file.getAbsolutePath());
+                map.putString("path", file.getAbsolutePath());
+                map.putInt("seq", currentChunkIndex.get());
+                sendEvent("onChunkReady", map);
+            }
+            currentChunkIndex.incrementAndGet();
         }
     }
-    
-    // Lifecycle management
+
+    /* ==============================================================
+     *                      MODULE CLEANUP
+     * ============================================================== */
+
     @Override
     public void onCatalystInstanceDestroy() {
         super.onCatalystInstanceDestroy();
         cleanup();
     }
-    
-    // Optimized cleanup with better resource management
+
     private void cleanup() {
         try {
-            // Signal thread to stop
-            shouldStopThread.set(true);
-            
-            // Stop recording if active
-            if (isRecording) {
-                try {
-                    // Cancel timer
-                    if (chunkTimer != null) {
-                        chunkTimer.cancel();
-                        chunkTimer = null;
-                    }
-                    
-                    // Release AudioRecord
-                    if (audioRecord != null) {
-                        audioRecord.release();
-                        audioRecord = null;
-                    }
-                    
-                    isRecording = false;
-                    isPaused = false;
-                } catch (Exception e) {
-                    Log.e(TAG, "Error stopping recording during cleanup", e);
+            stopCaptureLoop();
+            if (audioRecord != null) { audioRecord.release(); audioRecord = null; }
+            if (chunkTimer  != null) { chunkTimer.cancel(); chunkTimer = null; }
+            stateMapPool.clear(); errorMapPool.clear(); chunkMapPool.clear();
+            // Clear audio data buffer
+            synchronized (audioDataLock) {
+                if (audioDataBuffer != null) {
+                    try { audioDataBuffer.close(); } catch (IOException ignored) {}
+                    audioDataBuffer = null;
                 }
             }
-            
-            // Wait for recording thread to finish
-            if (recordingThread != null && recordingThread.isAlive()) {
-                try {
-                    recordingThread.join(1000); // Wait up to 1 second
-                } catch (InterruptedException e) {
-                    Log.w(TAG, "Interrupted while waiting for recording thread during cleanup");
-                } finally {
-                    recordingThread = null;
-                }
-            }
-            
-            // Stop audio level monitoring
-            stopAudioLevelMonitoring();
-            
-            // Clean up handlers
-            if (audioLevelHandler != null) {
-                try {
-                    audioLevelHandler.removeCallbacksAndMessages(null);
-                } catch (Exception e) {
-                    Log.e(TAG, "Error cleaning up audio level handler", e);
-                } finally {
-                    audioLevelHandler = null;
-                }
-            }
-            
-            // Reset thread stop flag
-            shouldStopThread.set(false);
-            
-            Log.i(TAG, "Cleanup completed with optimizations");
         } catch (Exception e) {
-            Log.e(TAG, "Error during cleanup", e);
+            Log.e(TAG, "cleanup error", e);
         }
     }
-} 
+
+    /* ==============================================================
+     *                  PERMISSIONS AND VARIOUS CHECKS
+     * ============================================================== */
+    private boolean checkPermissions() {
+        return ActivityCompat.checkSelfPermission(
+                getReactApplicationContext(),
+                Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /* ==============================================================
+     *                  WAV FILE WRITING
+     * ============================================================== */
+    
+    private void writeWavFile(File file, byte[] audioData, int sampleRate) throws IOException {
+        try (FileOutputStream fos = new FileOutputStream(file)) {
+            // WAV header (44 bytes)
+            ByteBuffer header = ByteBuffer.allocate(44);
+            header.order(ByteOrder.LITTLE_ENDIAN);
+            
+            // RIFF header
+            header.put("RIFF".getBytes());
+            header.putInt(36 + audioData.length); // File size - 8
+            header.put("WAVE".getBytes());
+            
+            // fmt chunk
+            header.put("fmt ".getBytes());
+            header.putInt(16); // fmt chunk size
+            header.putShort((short) 1); // Audio format (PCM)
+            header.putShort((short) 1); // Number of channels (mono)
+            header.putInt(sampleRate); // Sample rate
+            header.putInt(sampleRate * 2); // Byte rate (sampleRate * channels * bitsPerSample/8) = 16000 * 1 * 16/8 = 32000
+            header.putShort((short) 2); // Block align (channels * bitsPerSample/8)
+            header.putShort((short) 16); // Bits per sample
+            
+            // data chunk
+            header.put("data".getBytes());
+            header.putInt(audioData.length); // Data size
+            
+            // Write header
+            fos.write(header.array());
+            
+            // Write audio data
+            fos.write(audioData);
+            
+            Log.i(TAG, "WAV file written: " + file.getName() + " (" + audioData.length + " bytes, " + sampleRate + "Hz)");
+        }
+    }
+}
