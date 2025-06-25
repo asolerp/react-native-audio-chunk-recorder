@@ -21,11 +21,14 @@ import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     private static final String TAG = "AudioChunkRecorder";
@@ -33,33 +36,51 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
     
+    // Performance constants
+    private static final int BUFFER_SIZE = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
+    private static final int AUDIO_LEVEL_UPDATE_INTERVAL = 200; // ms - reduced from 100ms
+    private static final double AUDIO_LEVEL_THRESHOLD = 0.15;
+    private static final double AUDIO_LEVEL_NORMALIZATION_FACTOR = 3000.0;
+    
     // Recording state
     private AudioRecord audioRecord;
-    private boolean isRecording = false;
-    private boolean isPaused = false;
-    private int currentChunkIndex = 0;
+    private volatile boolean isRecording = false;
+    private volatile boolean isPaused = false;
+    private AtomicInteger currentChunkIndex = new AtomicInteger(0);
     private Timer chunkTimer;
     private File recordingDirectory;
     private Thread recordingThread;
-    private double chunkDuration = 10.0; // Default 10 seconds
+    private double chunkDuration = 30.0; // Default 30 seconds to match iOS
     
-    // Thread safety
+    // Thread safety - using atomic operations where possible
     private final Object stateLock = new Object();
-    private volatile boolean shouldStopThread = false;
+    private AtomicBoolean shouldStopThread = new AtomicBoolean(false);
     
-    // Audio level monitoring
+    // Audio level monitoring with performance optimizations
     private Handler audioLevelHandler;
     private Runnable audioLevelRunnable;
-    private double currentAudioLevel = 0.0;
+    private volatile double currentAudioLevel = 0.0;
+    private long lastAudioLevelUpdate = 0;
     
-    // Add new fields for chunk timing
-    private long chunkStartTime = 0; // epoch millis when current chunk started (or resumed)
-    private double accumulatedRecordingTime = 0.0; // seconds recorded in current chunk before a pause
+    // Chunk timing
+    private volatile long chunkStartTime = 0;
+    private volatile double accumulatedRecordingTime = 0.0;
+    
+    // Performance optimizations - Buffer reuse
+    private final byte[] recordingBuffer = new byte[BUFFER_SIZE];
+    private final short[] audioLevelBuffer = new short[BUFFER_SIZE / 2]; // 16-bit samples
+    private final WritableMap reusableStateMap = Arguments.createMap();
+    private final WritableMap reusableAudioLevelMap = Arguments.createMap();
+    private final WritableMap reusableChunkMap = Arguments.createMap();
+    private final WritableMap reusableErrorMap = Arguments.createMap();
+    
+    // File I/O optimization
+    private BufferedOutputStream currentFileStream;
     
     public AudioChunkRecorderModule(ReactApplicationContext reactContext) {
         super(reactContext);
         setupRecordingDirectory();
-        Log.i(TAG, "AudioChunkRecorderModule initialized");
+        Log.i(TAG, "AudioChunkRecorderModule initialized with performance optimizations");
     }
     
     @Override
@@ -83,6 +104,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         ) == PackageManager.PERMISSION_GRANTED;
     }
     
+    // Optimized event sending with reusable maps
     private void sendEvent(String eventName, WritableMap params) {
         try {
             ReactApplicationContext context = getReactApplicationContext();
@@ -94,6 +116,25 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             }
         } catch (Exception e) {
             Log.e(TAG, "Error sending event " + eventName + ": " + e.getMessage());
+        }
+    }
+    
+    // Optimized state change event with reusable map
+    private void sendStateChangeEvent() {
+        synchronized (reusableStateMap) {
+            reusableStateMap.clear();
+            reusableStateMap.putBoolean("isRecording", isRecording);
+            reusableStateMap.putBoolean("isPaused", isPaused);
+            sendEvent("onStateChange", reusableStateMap);
+        }
+    }
+    
+    // Optimized error event with reusable map
+    private void sendErrorEvent(String message) {
+        synchronized (reusableErrorMap) {
+            reusableErrorMap.clear();
+            reusableErrorMap.putString("message", message);
+            sendEvent("onError", reusableErrorMap);
         }
     }
     
@@ -111,7 +152,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         
         // Parse options
         int sampleRate = options.hasKey("sampleRate") ? options.getInt("sampleRate") : SAMPLE_RATE;
-        double chunkSeconds = options.hasKey("chunkSeconds") ? options.getDouble("chunkSeconds") : 10.0;
+        double chunkSeconds = options.hasKey("chunkSeconds") ? options.getDouble("chunkSeconds") : 30.0;
         
         this.chunkDuration = chunkSeconds;
         
@@ -127,16 +168,14 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     
     @ReactMethod
     public void stopRecording(Promise promise) {
-        synchronized (stateLock) {
-            if (!isRecording) {
-                promise.reject("not_recording", "No recording in progress");
-                return;
-            }
+        if (!isRecording) {
+            promise.reject("not_recording", "No recording in progress");
+            return;
         }
         
         try {
             // Signal thread to stop
-            shouldStopThread = true;
+            shouldStopThread.set(true);
             
             // Cancel chunk timer
             if (chunkTimer != null) {
@@ -145,10 +184,8 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             }
             
             // Finish current chunk only if not paused
-            synchronized (stateLock) {
-                if (!isPaused) {
-                    finishCurrentChunk();
-                }
+            if (!isPaused) {
+                finishCurrentChunk();
             }
             
             // Release AudioRecord
@@ -167,14 +204,12 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
                 recordingThread = null;
             }
             
-            // Update state with proper synchronization
-            synchronized (stateLock) {
-                isRecording = false;
-                isPaused = false;
-            }
+            // Update state
+            isRecording = false;
+            isPaused = false;
             
             // Reset thread stop flag
-            shouldStopThread = false;
+            shouldStopThread.set(false);
             
             // Stop audio level monitoring
             stopAudioLevelMonitoring();
@@ -183,7 +218,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             sendStateChangeEvent();
             
             promise.resolve("Recording stopped");
-            Log.i(TAG, "Recording stopped successfully - isRecording: " + isRecording + ", isPaused: " + isPaused);
+            Log.i(TAG, "Recording stopped successfully");
         } catch (Exception e) {
             Log.e(TAG, "Error stopping recording", e);
             promise.reject("stop_failed", "Failed to stop recording: " + e.getMessage());
@@ -192,11 +227,9 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     
     @ReactMethod
     public void pauseRecording(Promise promise) {
-        synchronized (stateLock) {
-            if (!isRecording || isPaused) {
-                promise.reject("invalid_state", "Cannot pause - not recording or already paused");
-                return;
-            }
+        if (!isRecording || isPaused) {
+            promise.reject("invalid_state", "Cannot pause - not recording or already paused");
+            return;
         }
         
         try {
@@ -211,11 +244,8 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
                 chunkTimer = null;
             }
             
-            // Update state with proper synchronization
-            synchronized (stateLock) {
-                isPaused = true;
-                // isRecording remains true - this is correct behavior
-            }
+            // Update state
+            isPaused = true;
             
             // Stop audio level monitoring when paused
             stopAudioLevelMonitoring();
@@ -224,7 +254,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             sendStateChangeEvent();
             
             promise.resolve("Recording paused");
-            Log.i(TAG, "Recording paused successfully - isRecording: " + isRecording + ", isPaused: " + isPaused);
+            Log.i(TAG, "Recording paused successfully");
         } catch (Exception e) {
             Log.e(TAG, "Error pausing recording", e);
             promise.reject("pause_failed", "Failed to pause recording: " + e.getMessage());
@@ -233,11 +263,9 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     
     @ReactMethod
     public void resumeRecording(Promise promise) {
-        synchronized (stateLock) {
-            if (!isRecording || !isPaused) {
-                promise.reject("invalid_state", "Cannot resume - not recording or not paused");
-                return;
-            }
+        if (!isRecording || !isPaused) {
+            promise.reject("invalid_state", "Cannot resume - not recording or not paused");
+            return;
         }
         
         try {
@@ -246,14 +274,11 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
                 audioRecord.startRecording();
             }
             
-            // Update state with proper synchronization
-            synchronized (stateLock) {
-                isPaused = false;
-                // isRecording remains true - this is correct behavior
-            }
+            // Update state
+            isPaused = false;
             
             // Restart chunk timer
-            startChunkTimer();
+            scheduleRotation(chunkDuration);
             
             // Restart audio level monitoring when resumed
             startAudioLevelMonitoring();
@@ -262,7 +287,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             sendStateChangeEvent();
             
             promise.resolve("Recording resumed");
-            Log.i(TAG, "Recording resumed successfully - isRecording: " + isRecording + ", isPaused: " + isPaused);
+            Log.i(TAG, "Recording resumed successfully");
         } catch (Exception e) {
             Log.e(TAG, "Error resuming recording", e);
             promise.reject("resume_failed", "Failed to resume recording: " + e.getMessage());
@@ -342,8 +367,8 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getCurrentChunkIndex(Promise promise) {
         try {
-            promise.resolve(currentChunkIndex);
-            Log.i(TAG, "getCurrentChunkIndex: " + currentChunkIndex);
+            promise.resolve(currentChunkIndex.get());
+            Log.i(TAG, "getCurrentChunkIndex: " + currentChunkIndex.get());
         } catch (Exception e) {
             promise.reject("ERROR", "Error en getCurrentChunkIndex: " + e.getMessage());
         }
@@ -369,7 +394,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             }
             state.putBoolean("isAvailable", true);
             state.putBoolean("hasPermission", checkPermissions());
-            state.putInt("currentChunkIndex", currentChunkIndex);
+            state.putInt("currentChunkIndex", currentChunkIndex.get());
             state.putDouble("chunkDuration", chunkDuration);
             state.putDouble("audioLevel", currentAudioLevel);
             
@@ -401,7 +426,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             }
             
             // Reset chunk index
-            currentChunkIndex = 0;
+            currentChunkIndex.set(0);
             
             String message = "Deleted " + deletedCount + " chunk files";
             promise.resolve(message);
@@ -470,7 +495,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         // Send state change event
         sendStateChangeEvent();
         
-        Log.i(TAG, "Started recording chunk " + currentChunkIndex);
+        Log.i(TAG, "Started recording chunk " + currentChunkIndex.get());
     }
     
     private void scheduleRotation(double delaySeconds) {
@@ -504,47 +529,30 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     }
     
     private void finishCurrentChunk() {
-        synchronized (stateLock) {
-            if (audioRecord != null && isRecording && !isPaused) {
-                audioRecord.stop();
-                
-                String fileName = "chunk_" + currentChunkIndex + ".wav";
-                File file = new File(recordingDirectory, fileName);
-                
-                WritableMap chunkData = Arguments.createMap();
-                chunkData.putString("uri", file.getAbsolutePath());
-                chunkData.putString("path", file.getAbsolutePath());
-                chunkData.putInt("seq", currentChunkIndex);
-                
-                sendEvent("onChunkReady", chunkData);
-                
-                currentChunkIndex++;
-                Log.i(TAG, "Finished chunk " + (currentChunkIndex - 1));
+        if (audioRecord != null && isRecording && !isPaused) {
+            audioRecord.stop();
+            
+            String fileName = "chunk_" + currentChunkIndex.get() + ".wav";
+            File file = new File(recordingDirectory, fileName);
+            
+            // Use reusable chunk map for better performance
+            synchronized (reusableChunkMap) {
+                reusableChunkMap.clear();
+                reusableChunkMap.putString("uri", file.getAbsolutePath());
+                reusableChunkMap.putString("path", file.getAbsolutePath());
+                reusableChunkMap.putInt("seq", currentChunkIndex.get());
+                sendEvent("onChunkReady", reusableChunkMap);
             }
+            
+            currentChunkIndex.incrementAndGet();
+            Log.i(TAG, "Finished chunk " + (currentChunkIndex.get() - 1));
         }
     }
     
-    private void sendStateChangeEvent() {
-        WritableMap params = Arguments.createMap();
-        synchronized (stateLock) {
-            params.putBoolean("isRecording", isRecording);
-            params.putBoolean("isPaused", isPaused);
-        }
-        sendEvent("onStateChange", params);
-    }
-    
-    private void sendErrorEvent(String message) {
-        WritableMap params = Arguments.createMap();
-        params.putString("message", message);
-        sendEvent("onError", params);
-    }
-    
-    // Audio level monitoring with safe Handler initialization
+    // Optimized audio level monitoring with throttling
     private void startAudioLevelMonitoring() {
-        // Initialize handler safely - avoid the Looper issue
         try {
             if (audioLevelHandler == null) {
-                // Use a simpler approach - post to main thread if available
                 if (Looper.getMainLooper() != null) {
                     audioLevelHandler = new Handler(Looper.getMainLooper());
                 } else {
@@ -562,7 +570,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
                 public void run() {
                     if (isRecording && !isPaused && audioRecord != null && audioLevelHandler != null) {
                         updateAudioLevel();
-                        audioLevelHandler.postDelayed(this, 100); // Update every 100ms
+                        audioLevelHandler.postDelayed(this, AUDIO_LEVEL_UPDATE_INTERVAL);
                     }
                 }
             };
@@ -585,84 +593,96 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         
         // Send zero level when stopping
         try {
-            WritableMap params = Arguments.createMap();
-            params.putDouble("level", 0.0);
-            params.putBoolean("hasAudio", false);
-            sendEvent("onAudioLevel", params);
+            synchronized (reusableAudioLevelMap) {
+                reusableAudioLevelMap.clear();
+                reusableAudioLevelMap.putDouble("level", 0.0);
+                reusableAudioLevelMap.putBoolean("hasAudio", false);
+                reusableAudioLevelMap.putDouble("averagePower", 0.0);
+                sendEvent("onAudioLevel", reusableAudioLevelMap);
+            }
         } catch (Exception e) {
             Log.w(TAG, "Error sending final audio level: " + e.getMessage());
         }
     }
     
+    // Optimized audio level update with throttling
     private void updateAudioLevel() {
         if (audioRecord == null || audioRecord.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
             return;
         }
         
-        // Read audio data to calculate level
-        int bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
-        short[] buffer = new short[bufferSize];
-        int bytesRead = audioRecord.read(buffer, 0, buffer.length);
+        // Throttle updates to avoid excessive event emission
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastAudioLevelUpdate < AUDIO_LEVEL_UPDATE_INTERVAL) {
+            return;
+        }
+        lastAudioLevelUpdate = currentTime;
+        
+        // Read audio data to calculate level using reusable buffer
+        int bytesRead = audioRecord.read(audioLevelBuffer, 0, audioLevelBuffer.length);
         
         if (bytesRead > 0) {
             // Calculate RMS (Root Mean Square) for audio level
             long sum = 0;
             for (int i = 0; i < bytesRead; i++) {
-                sum += buffer[i] * buffer[i];
+                sum += audioLevelBuffer[i] * audioLevelBuffer[i];
             }
             
             double rms = Math.sqrt(sum / (double) bytesRead);
             
             // Convert to normalized level (0.0 to 1.0)
-            double normalizedLevel = Math.min(1.0, rms / 3000.0); // Adjust threshold based on testing
-            boolean hasAudio = normalizedLevel > 0.15; // Lower threshold for Android
+            double normalizedLevel = Math.min(1.0, rms / AUDIO_LEVEL_NORMALIZATION_FACTOR);
+            boolean hasAudio = normalizedLevel > AUDIO_LEVEL_THRESHOLD;
             
             currentAudioLevel = normalizedLevel;
             
-            WritableMap params = Arguments.createMap();
-            params.putDouble("level", normalizedLevel);
-            params.putBoolean("hasAudio", hasAudio);
-            params.putDouble("averagePower", rms);
-            sendEvent("onAudioLevel", params);
+            // Use reusable map for better performance
+            synchronized (reusableAudioLevelMap) {
+                reusableAudioLevelMap.clear();
+                reusableAudioLevelMap.putDouble("level", normalizedLevel);
+                reusableAudioLevelMap.putBoolean("hasAudio", hasAudio);
+                reusableAudioLevelMap.putDouble("averagePower", rms);
+                sendEvent("onAudioLevel", reusableAudioLevelMap);
+            }
         }
     }
     
-    // Recording thread runnable
+    // Optimized recording thread with better I/O performance
     private class RecordingRunnable implements Runnable {
         @Override
         public void run() {
-            String fileName = "chunk_" + currentChunkIndex + ".wav";
+            String fileName = "chunk_" + currentChunkIndex.get() + ".wav";
             File file = new File(recordingDirectory, fileName);
             
-            try (FileOutputStream fos = new FileOutputStream(file)) {
-                int bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
-                byte[] buffer = new byte[bufferSize];
-                
-                while (!shouldStopThread) {
-                    synchronized (stateLock) {
-                        if (!isRecording || shouldStopThread) {
+            try (BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(file), BUFFER_SIZE * 2)) {
+                int bytesRead;
+                while (!shouldStopThread.get()) {
+                    // Check state without synchronization when possible
+                    if (!isRecording || shouldStopThread.get()) {
+                        break;
+                    }
+                    
+                    if (isPaused) {
+                        // Wait a bit when paused to avoid busy waiting
+                        try {
+                            Thread.sleep(50);
+                        } catch (InterruptedException e) {
+                            Log.w(TAG, "Recording thread interrupted");
                             break;
                         }
-                        
-                        if (isPaused) {
-                            // Wait a bit when paused to avoid busy waiting
-                            try {
-                                Thread.sleep(50);
-                            } catch (InterruptedException e) {
-                                Log.w(TAG, "Recording thread interrupted");
-                                break;
-                            }
-                            continue;
-                        }
+                        continue;
                     }
                     
                     if (audioRecord != null) {
-                        int bytesRead = audioRecord.read(buffer, 0, buffer.length);
+                        bytesRead = audioRecord.read(recordingBuffer, 0, recordingBuffer.length);
                         if (bytesRead > 0) {
-                            fos.write(buffer, 0, bytesRead);
+                            bos.write(recordingBuffer, 0, bytesRead);
                         }
                     }
                 }
+                
+                // Ensure all data is written
+                bos.flush();
             } catch (IOException e) {
                 Log.e(TAG, "Error writing audio data", e);
                 sendErrorEvent("Error writing audio data: " + e.getMessage());
@@ -679,32 +699,31 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         cleanup();
     }
     
+    // Optimized cleanup with better resource management
     private void cleanup() {
         try {
             // Signal thread to stop
-            shouldStopThread = true;
+            shouldStopThread.set(true);
             
             // Stop recording if active
-            synchronized (stateLock) {
-                if (isRecording) {
-                    try {
-                        // Cancel timer
-                        if (chunkTimer != null) {
-                            chunkTimer.cancel();
-                            chunkTimer = null;
-                        }
-                        
-                        // Release AudioRecord
-                        if (audioRecord != null) {
-                            audioRecord.release();
-                            audioRecord = null;
-                        }
-                        
-                        isRecording = false;
-                        isPaused = false;
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error stopping recording during cleanup", e);
+            if (isRecording) {
+                try {
+                    // Cancel timer
+                    if (chunkTimer != null) {
+                        chunkTimer.cancel();
+                        chunkTimer = null;
                     }
+                    
+                    // Release AudioRecord
+                    if (audioRecord != null) {
+                        audioRecord.release();
+                        audioRecord = null;
+                    }
+                    
+                    isRecording = false;
+                    isPaused = false;
+                } catch (Exception e) {
+                    Log.e(TAG, "Error stopping recording during cleanup", e);
                 }
             }
             
@@ -734,11 +753,12 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             }
             
             // Reset thread stop flag
-            shouldStopThread = false;
+            shouldStopThread.set(false);
             
-            Log.i(TAG, "Cleanup completed");
+            Log.i(TAG, "Cleanup completed with optimizations");
         } catch (Exception e) {
             Log.e(TAG, "Error during cleanup", e);
         }
     }
+} 
 } 
