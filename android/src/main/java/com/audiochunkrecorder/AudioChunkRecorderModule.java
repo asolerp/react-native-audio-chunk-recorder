@@ -715,8 +715,11 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
                         audioRecord = null;
                     }
                     
-            } catch (Exception e) {
-                Log.e(TAG, "Error stopping recording during cleanup", e);
+                    isRecording = false;
+                    isPaused = false;
+                } catch (Exception e) {
+                    Log.e(TAG, "Error stopping recording during cleanup", e);
+                }
             }
             
             // Wait for recording thread to finish
