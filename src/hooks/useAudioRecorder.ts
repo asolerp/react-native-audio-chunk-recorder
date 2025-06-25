@@ -13,11 +13,28 @@ export interface UseAudioRecorderResult {
   resumeRecording: () => Promise<void>;
   hasPermissions: boolean;
   requestPermissions: () => Promise<boolean>;
+  // Auto-recording functionality
+  autoRecording: boolean;
+  setAutoRecording: (enabled: boolean) => void;
+  toggleAutoRecording: () => void;
 }
 
-export function useAudioRecorder(): UseAudioRecorderResult {
+export interface UseAudioRecorderOptions {
+  autoRecording?: boolean;
+  onAutoRecordingStart?: () => void;
+  onAutoRecordingStop?: () => void;
+  onError?: (error: string) => void;
+  onStateChange?: (state: { isRecording: boolean; isPaused: boolean }) => void;
+}
+
+export function useAudioRecorder(
+  options: UseAudioRecorderOptions = {}
+): UseAudioRecorderResult {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [autoRecording, setAutoRecording] = useState(
+    options.autoRecording || false
+  );
 
   // Use the permissions hook
   const { hasPermissions, requestPermissions } = useAudioPermissions();
@@ -38,42 +55,86 @@ export function useAudioRecorder(): UseAudioRecorderResult {
       }
 
       try {
-        const options = {
+        const recordingOptions = {
           sampleRate,
           chunkSeconds,
         };
-        await AudioChunkRecorderModule.startRecording(options);
+        await AudioChunkRecorderModule.startRecording(recordingOptions);
       } catch (error) {
-        Alert.alert("Error", `Failed to start recording: ${error}`);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        options.onError?.(errorMessage);
+        Alert.alert("Error", `Failed to start recording: ${errorMessage}`);
       }
     },
-    [hasPermissions, requestPermissions]
+    [hasPermissions, requestPermissions, options.onError]
   );
 
   const stopRecording = useCallback(async () => {
     try {
       await AudioChunkRecorderModule.stopRecording();
+      // If auto-recording is enabled, stop it when manually stopped
+      if (autoRecording) {
+        setAutoRecording(false);
+        options.onAutoRecordingStop?.();
+      }
     } catch (error) {
-      Alert.alert("Error", `Failed to stop recording: ${error}`);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      options.onError?.(errorMessage);
+      Alert.alert("Error", `Failed to stop recording: ${errorMessage}`);
     }
-  }, []);
+  }, [autoRecording, options.onAutoRecordingStop, options.onError]);
 
   const pauseRecording = useCallback(async () => {
     try {
       await AudioChunkRecorderModule.pauseRecording();
     } catch (error) {
-      Alert.alert("Error", `Failed to pause recording: ${error}`);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      options.onError?.(errorMessage);
+      Alert.alert("Error", `Failed to pause recording: ${errorMessage}`);
     }
-  }, []);
+  }, [options.onError]);
 
   const resumeRecording = useCallback(async () => {
     try {
       await AudioChunkRecorderModule.resumeRecording();
     } catch (error) {
-      Alert.alert("Error", `Failed to resume recording: ${error}`);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      options.onError?.(errorMessage);
+      Alert.alert("Error", `Failed to resume recording: ${errorMessage}`);
     }
-  }, []);
+  }, [options.onError]);
 
+  const toggleAutoRecording = useCallback(() => {
+    const newAutoRecording = !autoRecording;
+    setAutoRecording(newAutoRecording);
+
+    if (newAutoRecording) {
+      options.onAutoRecordingStart?.();
+      // Start recording immediately if auto-recording is enabled
+      if (!isRecording) {
+        startRecording().catch(console.error);
+      }
+    } else {
+      options.onAutoRecordingStop?.();
+      // Stop recording if auto-recording is disabled and currently recording
+      if (isRecording) {
+        stopRecording().catch(console.error);
+      }
+    }
+  }, [
+    autoRecording,
+    isRecording,
+    startRecording,
+    stopRecording,
+    options.onAutoRecordingStart,
+    options.onAutoRecordingStop,
+  ]);
+
+  // Listen for native events
   useEffect(() => {
     const emitter = new NativeEventEmitter(AudioChunkRecorderModule);
 
@@ -82,6 +143,7 @@ export function useAudioRecorder(): UseAudioRecorderResult {
       (state: { isRecording: boolean; isPaused: boolean }) => {
         setIsRecording(state.isRecording);
         setIsPaused(state.isPaused || false);
+        options.onStateChange?.(state);
       }
     );
 
@@ -89,6 +151,7 @@ export function useAudioRecorder(): UseAudioRecorderResult {
       "onError",
       (error: { message: string }) => {
         console.error("AudioRecorder error:", error.message);
+        options.onError?.(error.message);
       }
     );
 
@@ -96,7 +159,14 @@ export function useAudioRecorder(): UseAudioRecorderResult {
       stateSub.remove();
       errorSub.remove();
     };
-  }, []);
+  }, [options.onStateChange, options.onError]);
+
+  // Auto-start recording when autoRecording is enabled and permissions are granted
+  useEffect(() => {
+    if (autoRecording && hasPermissions && !isRecording) {
+      startRecording().catch(console.error);
+    }
+  }, [autoRecording, hasPermissions, isRecording, startRecording]);
 
   return {
     isRecording,
@@ -107,5 +177,8 @@ export function useAudioRecorder(): UseAudioRecorderResult {
     resumeRecording,
     hasPermissions,
     requestPermissions,
+    autoRecording,
+    setAutoRecording,
+    toggleAutoRecording,
   };
 }

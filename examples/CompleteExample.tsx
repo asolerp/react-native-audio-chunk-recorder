@@ -9,6 +9,7 @@ import {
   FlatList,
   TouchableOpacity,
   Dimensions,
+  Switch,
 } from "react-native";
 import {
   useAudioRecorder,
@@ -20,7 +21,7 @@ import {
 const { width } = Dimensions.get("window");
 
 export default function CompleteExample() {
-  // ===== AUDIO RECORDER HOOK =====
+  // ===== AUDIO RECORDER HOOK WITH AUTO-RECORDING =====
   const {
     isRecording,
     isPaused,
@@ -30,7 +31,34 @@ export default function CompleteExample() {
     resumeRecording,
     hasPermissions,
     requestPermissions,
-  } = useAudioRecorder();
+    // Auto-recording functionality
+    autoRecording,
+    setAutoRecording,
+    toggleAutoRecording,
+  } = useAudioRecorder({
+    autoRecording: false, // Start with auto-recording disabled
+    onAutoRecordingStart: () => {
+      console.log("🚀 Auto-recording started");
+      Alert.alert(
+        "Auto-Recording",
+        "Auto-recording has been enabled and started!"
+      );
+    },
+    onAutoRecordingStop: () => {
+      console.log("🛑 Auto-recording stopped");
+      Alert.alert(
+        "Auto-Recording",
+        "Auto-recording has been disabled and stopped!"
+      );
+    },
+    onError: (error) => {
+      console.error("❌ Recording error:", error);
+      Alert.alert("Recording Error", error);
+    },
+    onStateChange: (state) => {
+      console.log("🔄 Recording state changed:", state);
+    },
+  });
 
   // ===== AUDIO LEVEL PREVIEW HOOK =====
   const {
@@ -267,7 +295,8 @@ export default function CompleteExample() {
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>Complete Audio Recorder Example</Text>
       <Text style={styles.subtitle}>
-        All hooks working together: Recording + Level Preview + Chunk Management
+        All hooks working together: Recording + Auto-Recording + Level Preview +
+        Chunk Management
       </Text>
 
       {/* Permissions Section */}
@@ -283,6 +312,43 @@ export default function CompleteExample() {
             onPress={requestPermissions}
           />
         )}
+      </View>
+
+      {/* Auto-Recording Section */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>🤖 Auto-Recording</Text>
+        <Text style={styles.description}>
+          Automatically start/stop recording based on state changes
+        </Text>
+
+        <View style={styles.autoRecordingRow}>
+          <Text style={styles.label}>
+            Auto-Recording: {autoRecording ? "🟢 Enabled" : "🔴 Disabled"}
+          </Text>
+          <Switch
+            value={autoRecording}
+            onValueChange={setAutoRecording}
+            trackColor={{ false: "#767577", true: "#81b0ff" }}
+            thumbColor={autoRecording ? "#f5dd4b" : "#f4f3f4"}
+          />
+        </View>
+
+        <View style={styles.buttonRow}>
+          <Button
+            title="Toggle Auto-Recording"
+            color="#9C27B0"
+            onPress={toggleAutoRecording}
+          />
+        </View>
+
+        <Text style={styles.infoText}>
+          <Text style={styles.bold}>How it works:</Text>
+          {"\n"}• When enabled, recording starts automatically when permissions
+          are granted
+          {"\n"}• When disabled, recording stops and auto-recording is turned
+          off
+          {"\n"}• Manual stop also disables auto-recording
+        </Text>
       </View>
 
       {/* Audio Level Preview Section */}
@@ -451,17 +517,18 @@ export default function CompleteExample() {
         <Text style={styles.sectionTitle}>🔧 Hook Information</Text>
         <Text style={styles.infoText}>
           <Text style={styles.bold}>useAudioRecorder:</Text> Controls recording
-          state and operations{"\n"}
+          state, operations, and auto-recording functionality{"\n"}
           <Text style={styles.bold}>useAudioLevelPreview:</Text> Real-time audio
           level monitoring{"\n"}
           <Text style={styles.bold}>useAudioChunks:</Text> Chunk management with
           callbacks{"\n"}
           {"\n"}
           <Text style={styles.bold}>Features:</Text>
-          {"\n"}• Audio level preview without recording{"\n"}• Recording with
-          pause/resume{"\n"}• Automatic chunk creation every 30 seconds{"\n"}•
-          External chunk processing with callbacks{"\n"}• Chunk statistics and
-          management{"\n"}• TypeScript support throughout
+          {"\n"}• Auto-recording with smart state management{"\n"}• Audio level
+          preview without recording{"\n"}• Recording with pause/resume{"\n"}•
+          Automatic chunk creation every 30 seconds{"\n"}• External chunk
+          processing with callbacks{"\n"}• Chunk statistics and management{"\n"}
+          • TypeScript support throughout{"\n"}• Error handling and callbacks
         </Text>
       </View>
     </ScrollView>
@@ -628,5 +695,11 @@ const styles = StyleSheet.create({
   },
   bold: {
     fontWeight: "bold",
+  },
+  autoRecordingRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
   },
 });
