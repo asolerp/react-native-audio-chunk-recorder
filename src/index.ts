@@ -4,18 +4,18 @@
  */
 
 // Main hook
-export { useAudioRecorderCore } from './hooks/useAudioRecorderCore';
+export { useAudioRecorderCore } from "./hooks/useAudioRecorderCore";
 
 // Native module interface
 export {
   NativeAudioChunkRecorder,
-  AudioChunkRecorderEventEmitter
-} from './NativeAudioChunkRecorder';
+  AudioChunkRecorderEventEmitter,
+} from "./NativeAudioChunkRecorder";
 export type {
   NativeAudioChunkRecorderInterface,
   AudioChunkRecorderEvents,
-  AudioChunkRecorderEventType
-} from './NativeAudioChunkRecorder';
+  AudioChunkRecorderEventType,
+} from "./NativeAudioChunkRecorder";
 
 // Types
 export type {
@@ -31,12 +31,18 @@ export type {
   AlertButton,
   StateManager,
   InterruptionHandler,
-  ChunkUploader
-} from './types';
+  ChunkUploader,
+} from "./types";
 
 // Default providers
-export { reactNativeAlertProvider } from './providers/reactNativeAlertProvider';
-export { createSimpleStateManager } from './providers/simpleStateManager';
+export { reactNativeAlertProvider } from "./providers/reactNativeAlertProvider";
+export { createSimpleStateManager } from "./providers/simpleStateManager";
 
 // Adapters
-export { createJotaiStateManager } from './adapters/jotaiAdapter';
+export { createJotaiStateManager } from "./adapters/jotaiAdapter";
+
+// New Kotlin modular hooks
+export { useAudioLevelPreview } from "./hooks/useAudioLevelPreview";
+export { useAudioRecorder } from "./hooks/useAudioRecorder";
+export { useAudioChunks } from "./hooks/useAudioChunks";
+export type { AudioChunk } from "./hooks/useAudioChunks";
