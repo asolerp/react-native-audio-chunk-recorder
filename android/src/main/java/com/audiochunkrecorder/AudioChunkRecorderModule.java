@@ -122,7 +122,6 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     // Optimized state change event with reusable map
     private void sendStateChangeEvent() {
         synchronized (reusableStateMap) {
-            reusableStateMap.clear();
             reusableStateMap.putBoolean("isRecording", isRecording);
             reusableStateMap.putBoolean("isPaused", isPaused);
             sendEvent("onStateChange", reusableStateMap);
@@ -132,7 +131,6 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     // Optimized error event with reusable map
     private void sendErrorEvent(String message) {
         synchronized (reusableErrorMap) {
-            reusableErrorMap.clear();
             reusableErrorMap.putString("message", message);
             sendEvent("onError", reusableErrorMap);
         }
@@ -537,7 +535,6 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             
             // Use reusable chunk map for better performance
             synchronized (reusableChunkMap) {
-                reusableChunkMap.clear();
                 reusableChunkMap.putString("uri", file.getAbsolutePath());
                 reusableChunkMap.putString("path", file.getAbsolutePath());
                 reusableChunkMap.putInt("seq", currentChunkIndex.get());
@@ -594,7 +591,6 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         // Send zero level when stopping
         try {
             synchronized (reusableAudioLevelMap) {
-                reusableAudioLevelMap.clear();
                 reusableAudioLevelMap.putDouble("level", 0.0);
                 reusableAudioLevelMap.putBoolean("hasAudio", false);
                 reusableAudioLevelMap.putDouble("averagePower", 0.0);
@@ -638,7 +634,6 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             
             // Use reusable map for better performance
             synchronized (reusableAudioLevelMap) {
-                reusableAudioLevelMap.clear();
                 reusableAudioLevelMap.putDouble("level", normalizedLevel);
                 reusableAudioLevelMap.putBoolean("hasAudio", hasAudio);
                 reusableAudioLevelMap.putDouble("averagePower", rms);
@@ -720,11 +715,8 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
                         audioRecord = null;
                     }
                     
-                    isRecording = false;
-                    isPaused = false;
-                } catch (Exception e) {
-                    Log.e(TAG, "Error stopping recording during cleanup", e);
-                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error stopping recording during cleanup", e);
             }
             
             // Wait for recording thread to finish
