@@ -45,4 +45,6 @@ export { createJotaiStateManager } from "./adapters/jotaiAdapter";
 export { useAudioLevelPreview } from "./hooks/useAudioLevelPreview";
 export { useAudioRecorder } from "./hooks/useAudioRecorder";
 export { useAudioChunks } from "./hooks/useAudioChunks";
+export { useAudioPermissions } from "./hooks/useAudioPermissions";
 export type { AudioChunk } from "./hooks/useAudioChunks";
+export type { PermissionStatus } from "./hooks/useAudioPermissions";

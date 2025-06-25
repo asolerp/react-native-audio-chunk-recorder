@@ -28,6 +28,8 @@ export default function CompleteExample() {
     stopRecording,
     pauseRecording,
     resumeRecording,
+    hasPermissions,
+    requestPermissions,
   } = useAudioRecorder();
 
   // ===== AUDIO LEVEL PREVIEW HOOK =====
@@ -267,6 +269,21 @@ export default function CompleteExample() {
       <Text style={styles.subtitle}>
         All hooks working together: Recording + Level Preview + Chunk Management
       </Text>
+
+      {/* Permissions Section */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>🔐 Permissions</Text>
+        <Text style={styles.label}>
+          Status: {hasPermissions ? "✅ Granted" : "❌ Not Granted"}
+        </Text>
+        {!hasPermissions && (
+          <Button
+            title="Request Permissions"
+            color="#FF9800"
+            onPress={requestPermissions}
+          />
+        )}
+      </View>
 
       {/* Audio Level Preview Section */}
       <View style={styles.section}>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { NativeModules, NativeEventEmitter } from "react-native";
+import { NativeModules, NativeEventEmitter, Alert } from "react-native";
+import { useAudioPermissions } from "./useAudioPermissions";
 
 const { AudioChunkRecorderModule } = NativeModules;
 
@@ -13,6 +14,8 @@ export interface UseAudioLevelPreviewReturn {
   startPreview: () => Promise<void>;
   stopPreview: () => Promise<void>;
   isPreviewing: boolean;
+  hasPermissions: boolean;
+  requestPermissions: () => Promise<boolean>;
 }
 
 export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
@@ -22,14 +25,30 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
   });
   const [isPreviewing, setIsPreviewing] = useState(false);
 
+  // Use the permissions hook
+  const { hasPermissions, requestPermissions } = useAudioPermissions();
+
   const startPreview = useCallback(async () => {
+    // Check permissions before starting preview
+    if (!hasPermissions) {
+      const granted = await requestPermissions();
+      if (!granted) {
+        Alert.alert(
+          "Permission Required",
+          "Microphone permission is required to monitor audio levels.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
+    }
+
     try {
       await AudioChunkRecorderModule.startAudioLevelPreview();
       setIsPreviewing(true);
     } catch (error) {
-      console.error("Failed to start audio level preview:", error);
+      Alert.alert("Error", `Failed to start audio level preview: ${error}`);
     }
-  }, []);
+  }, [hasPermissions, requestPermissions]);
 
   const stopPreview = useCallback(async () => {
     try {
@@ -38,7 +57,7 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
       // Reset level when stopping
       setData({ level: 0, hasAudio: false });
     } catch (error) {
-      console.error("Failed to stop audio level preview:", error);
+      Alert.alert("Error", `Failed to stop audio level preview: ${error}`);
     }
   }, []);
 
@@ -65,5 +84,7 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
     startPreview,
     stopPreview,
     isPreviewing,
+    hasPermissions,
+    requestPermissions,
   };
 }
