@@ -9,6 +9,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
@@ -34,8 +36,8 @@ class RecorderEngine(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     // --- public flows ----------------------------------------------------
-    private val _pcmFlow  = kotlinx.coroutines.flow.MutableSharedFlow<ShortArray>(extraBufferCapacity = 8)
-    val pcmFlow           = _pcmFlow.asSharedFlow()
+    private val _pcmFlow  = MutableSharedFlow<ShortArray>(extraBufferCapacity = 8)
+    val pcmFlow: SharedFlow<ShortArray> = _pcmFlow
 
     private val _levelFlow = MutableStateFlow(0.0)
     val levelFlow: StateFlow<Double> = _levelFlow
