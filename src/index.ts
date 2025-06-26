@@ -6,7 +6,7 @@
 // Main hooks
 export { useAudioRecorderCore } from "./hooks/useAudioRecorderCore";
 export { useAudioLevel } from "./hooks/useAudioLevel";
-export { useAudioFiles } from "./hooks/useAudioFiles";
+
 export { createJotaiStateManager } from "./adapters/jotaiAdapter";
 export { audioManager } from "./providers/audioManager";
 
@@ -41,3 +41,11 @@ export {
 // Default providers
 export { reactNativeAlertProvider } from "./providers/reactNativeAlertProvider";
 export { createSimpleStateManager } from "./providers/simpleStateManager";
+
+// Error tracking
+export {
+  noopErrorTracker,
+  createSentryErrorTracker,
+  createConsoleErrorTracker,
+} from "./providers/errorTracker";
+export type { ErrorTracker } from "./providers/errorTracker";

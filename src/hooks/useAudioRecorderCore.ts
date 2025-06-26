@@ -22,6 +22,7 @@ import type {
 import { reactNativeAlertProvider } from "../providers/reactNativeAlertProvider";
 import { createSimpleStateManager } from "../providers/simpleStateManager";
 import { audioManager } from "../providers/audioManager";
+import { noopErrorTracker } from "../providers/errorTracker";
 
 // Mock native module interface - in real implementation this would come from native
 // Native interface - using the actual bridge
@@ -93,6 +94,7 @@ class EventListenerManager {
     options: AudioRecorderCoreOptions,
     stateManager: any,
     alertProvider: any,
+    errorTracker: any,
     updateState: (updates: any) => void
   ) {
     // Clear existing listeners
@@ -102,15 +104,18 @@ class EventListenerManager {
     const chunkListener = AudioChunkRecorderEventEmitter.addListener(
       "onChunkReady",
       (chunk: ChunkData) => {
-        console.log("AudioRecorderCore: Chunk ready:", chunk);
         this.notifyListeners("onChunkReady", chunk);
         options.onChunkReady?.(chunk);
 
         // Upload chunk if uploader is provided
         if (options.chunkUploader) {
-          console.log("AudioRecorderCore: Uploading chunk via chunkUploader");
           options.chunkUploader.upload(chunk).catch((error) => {
             console.error("AudioRecorderCore: Chunk upload failed:", error);
+            errorTracker.captureException(error, {
+              chunk: chunk,
+              action: "chunk_upload",
+              chunkSeq: chunk.seq,
+            });
             options.chunkUploader?.onError?.(
               chunk.seq.toString(),
               error.message || "Upload failed"
@@ -135,6 +140,10 @@ class EventListenerManager {
       "onError",
       (error: ErrorData) => {
         console.error("AudioRecorderCore: Native error:", error);
+        errorTracker.captureException(new Error(error.message), {
+          errorCode: error.code,
+          source: "native_module",
+        });
         this.notifyListeners("onError", error);
         options.onError?.(error);
       }
@@ -144,11 +153,6 @@ class EventListenerManager {
     const stateListener = AudioChunkRecorderEventEmitter.addListener(
       "onStateChange",
       (state: StateChangeData) => {
-        console.log(
-          "AudioRecorderCore: 🔄 State change received from native:",
-          state
-        );
-
         // Update state directly for recording state
         updateState({
           isRecording: state.isRecording,
@@ -171,8 +175,15 @@ class EventListenerManager {
     const interruptionListener = AudioChunkRecorderEventEmitter.addListener(
       "onInterruption",
       (interruption: InterruptionData) => {
-        console.log("AudioRecorderCore: Interruption:", interruption);
         this.notifyListeners("onInterruption", interruption);
+
+        // Add breadcrumb for interruption
+        errorTracker.addBreadcrumb({
+          message: `Audio interruption: ${interruption.type}`,
+          category: "audio_interruption",
+          level: "warning",
+          data: interruption,
+        });
 
         // Update global state
         if (interruption.type === "began") {
@@ -254,6 +265,10 @@ export const useAudioRecorderCore = (
     () => options.stateManager || createSimpleStateManager(),
     [options.stateManager]
   );
+  const errorTracker = useMemo(
+    () => options.errorTracker || noopErrorTracker,
+    [options.errorTracker]
+  );
 
   // Local state with optimized updates
   const [state, setState] = useState({
@@ -313,6 +328,7 @@ export const useAudioRecorderCore = (
       options,
       stateManager,
       alertProvider,
+      errorTracker,
       updateState
     );
 
@@ -332,13 +348,8 @@ export const useAudioRecorderCore = (
   // Memoized actions to prevent unnecessary re-creation
   const startRecording = useCallback(
     async (recordingOptions?: RecordingOptions) => {
-      console.log("AudioRecorderCore: 🚀 startRecording called");
-
       // Check if already recording to avoid "Recording is already in progress" error
       if (state.isRecording) {
-        console.log(
-          "AudioRecorderCore: ⚠️ Already recording, skipping start request"
-        );
         return;
       }
 
@@ -347,32 +358,44 @@ export const useAudioRecorderCore = (
           ...options.defaultRecordingOptions,
           ...recordingOptions,
         };
-        console.log(
-          "AudioRecorderCore: 🚀 Calling AudioManager startRecording with options:",
-          finalOptions
-        );
+
+        errorTracker.addBreadcrumb({
+          message: "Starting audio recording",
+          category: "audio_recording",
+          level: "info",
+          data: finalOptions,
+        });
 
         const result = await audioManager.startRecording(finalOptions);
-        console.log(
-          "AudioRecorderCore: 🚀 AudioManager startRecording result:",
-          result
-        );
       } catch (error) {
         console.error("AudioRecorderCore: ❌ Start recording failed:", error);
+        errorTracker.captureException(error as Error, {
+          action: "start_recording",
+          options: recordingOptions,
+        });
         throw error;
       }
     },
-    [state.isRecording, options.defaultRecordingOptions]
+    [state.isRecording, options.defaultRecordingOptions, errorTracker]
   );
 
   const stopRecording = useCallback(async () => {
     try {
+      errorTracker.addBreadcrumb({
+        message: "Stopping audio recording",
+        category: "audio_recording",
+        level: "info",
+      });
+
       await audioManager.stopRecording();
     } catch (error) {
       console.error("AudioRecorderCore: Stop recording failed:", error);
+      errorTracker.captureException(error as Error, {
+        action: "stop_recording",
+      });
       throw error;
     }
-  }, []);
+  }, [errorTracker]);
 
   const pauseRecording = useCallback(async () => {
     if (!serviceRef.current) {
@@ -430,12 +453,21 @@ export const useAudioRecorderCore = (
     try {
       const granted = await serviceRef.current.checkPermissions();
       updateState({ hasPermission: granted });
+
+      errorTracker.addBreadcrumb({
+        message: `Permissions check result: ${granted}`,
+        category: "permissions",
+        level: granted ? "info" : "warning",
+      });
     } catch (error) {
       console.error("AudioRecorderCore: Check permissions failed:", error);
+      errorTracker.captureException(error as Error, {
+        action: "check_permissions",
+      });
       updateState({ hasPermission: false });
       throw error;
     }
-  }, [updateState]);
+  }, [updateState, errorTracker]);
 
   // Auto check permissions on mount - moved after checkPermissions definition
   useEffect(() => {
@@ -457,7 +489,6 @@ export const useAudioRecorderCore = (
       !autoStartAttemptedRef.current &&
       serviceRef.current
     ) {
-      console.log("AudioRecorderCore: Auto-starting recording...");
       autoStartAttemptedRef.current = true;
       startRecording().catch((error: unknown) => {
         console.error("AudioRecorderCore: Auto-start failed:", error);
@@ -477,16 +508,9 @@ export const useAudioRecorderCore = (
   // Listen to AudioManager state changes
   useEffect(() => {
     const unsubscribe = audioManager.addListener((type, active) => {
-      console.log(
-        `AudioRecorderCore: 📢 AudioManager notification - ${type}: ${active}`
-      );
-
       if (type === "recording") {
         if (!active && state.isRecording) {
           // Recording was stopped by another hook or the manager
-          console.log(
-            "AudioRecorderCore: 📢 Recording stopped by AudioManager, updating state"
-          );
           updateState({
             isRecording: false,
             isPaused: false,

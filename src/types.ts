@@ -2,6 +2,8 @@
  * Core types and interfaces for react-native-audio-chunk-recorder
  */
 
+import { ErrorTracker } from "./providers/errorTracker";
+
 // ===== NATIVE MODULE TYPES =====
 // These would normally come from the native module
 
@@ -27,7 +29,7 @@ export interface ErrorData {
 }
 
 export interface InterruptionData {
-  type: 'began' | 'ended' | 'audioDeviceDisconnected';
+  type: "began" | "ended" | "audioDeviceDisconnected";
   reason?: string;
   wasRecording?: boolean;
   shouldResume?: boolean;
@@ -51,7 +53,7 @@ export interface AudioLevelData {
 export interface AlertButton {
   text: string;
   onPress?: () => void;
-  style?: 'default' | 'cancel' | 'destructive';
+  style?: "default" | "cancel" | "destructive";
 }
 
 export interface AlertProvider {
@@ -84,6 +86,7 @@ export interface AudioRecorderCoreOptions {
   stateManager?: StateManager;
   interruptionHandler?: InterruptionHandler;
   chunkUploader?: ChunkUploader;
+  errorTracker?: ErrorTracker;
   nativeService?: any; // Inject the native service
 
   // Core configuration

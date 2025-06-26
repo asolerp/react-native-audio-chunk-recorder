@@ -1,15 +1,17 @@
 # react-native-audio-chunk-recorder
 
-A modular React Native audio recording library with chunking support and configurable dependencies.
+A modular React Native audio recording library with chunking support, audio level monitoring, and configurable dependencies.
 
 ## Features
 
 - 🎙️ **Audio Recording with Chunking**: Record audio in configurable chunks
+- 📊 **Audio Level Monitoring**: Real-time audio level detection and monitoring
 - 🔄 **Interruption Handling**: Handle phone calls and device disconnections
 - 🎛️ **Modular Architecture**: Inject your own state management, alerts, and upload logic
 - 📱 **React Native Ready**: Works out of the box with React Native
 - 🔧 **TypeScript Support**: Full TypeScript definitions
 - 🧩 **Framework Agnostic**: Core logic can work with any React app
+- 🎯 **Global Coordination**: AudioManager prevents conflicts between hooks
 
 ## Installation
 
@@ -117,11 +119,11 @@ This library supports background recording on both iOS and Android. When properl
 
 ## Quick Start
 
-### Basic Usage
+### Basic Audio Recording
 
 ```tsx
 import React from "react";
-import { View, Button } from "react-native";
+import { View, Button, Text } from "react-native";
 import { useAudioRecorderCore } from "react-native-audio-chunk-recorder";
 
 export const RecordingScreen = () => {
@@ -144,92 +146,254 @@ export const RecordingScreen = () => {
 };
 ```
 
-### Advanced Usage with Custom Providers
+### Error Tracking
+
+The library supports optional error tracking integration for monitoring and debugging issues in production:
 
 ```tsx
 import React from "react";
+import { View, Button, Text, Alert } from "react-native";
 import {
   useAudioRecorderCore,
-  createJotaiStateManager,
+  createSentryErrorTracker,
+  createConsoleErrorTracker,
 } from "react-native-audio-chunk-recorder";
-import { useStore } from "jotai";
-import { audioInterruptionAtom } from "./atoms";
 
-const customAlertProvider = {
-  showAlert: (title, message, buttons) => {
-    // Custom alert implementation
-    MyCustomAlert.show({ title, message, buttons });
-  },
-};
+export const RecordingWithErrorTracking = () => {
+  // Option 1: Sentry error tracking (requires @sentry/react-native)
+  const sentryTracker = createSentryErrorTracker("YOUR_SENTRY_DSN");
 
-const customInterruptionHandler = {
-  onInterruption: (data) => {
-    // Custom interruption logic
-    console.log("Custom interruption handling:", data);
-  },
-  onDeviceDisconnected: (data) => {
-    // Custom device disconnection logic
-    console.log("Device disconnected:", data);
-  },
-};
+  // Option 2: Console error tracking (for development)
+  const consoleTracker = createConsoleErrorTracker();
 
-const atoms = {
-  audioInterruption: audioInterruptionAtom,
-};
+  const { isRecording, startRecording, stopRecording } = useAudioRecorderCore({
+    // Configure error tracking
+    errorTracker: sentryTracker, // or consoleTracker for development
 
-export const AdvancedRecordingScreen = () => {
-  const store = useStore();
-  const stateManager = createJotaiStateManager(store, atoms);
-
-  const recorder = useAudioRecorderCore({
-    alertProvider: customAlertProvider,
-    stateManager: stateManager,
-    interruptionHandler: customInterruptionHandler,
-    autoCheckPermissions: true,
-    defaultRecordingOptions: {
-      sampleRate: 16000, // Optimized for speech recognition
-      bitRate: 64000, // Good quality for speech
-      chunkSeconds: 30, // Balanced chunk size
-    },
-    onChunkReady: (chunk) => {
-      console.log("New chunk ready:", chunk);
-      // Custom chunk handling
+    // Optional: Set user context for better error tracking
+    onError: (error) => {
+      sentryTracker.setUser("user123");
+      sentryTracker.setTag("component", "audio_recorder");
     },
   });
 
-  // ... rest of component
+  const handleStartRecording = async () => {
+    try {
+      await startRecording();
+    } catch (error) {
+      Alert.alert("Error", "Failed to start recording");
+    }
+  };
+
+  return (
+    <View>
+      <Button
+        title={isRecording ? "Stop Recording" : "Start Recording"}
+        onPress={isRecording ? stopRecording : handleStartRecording}
+      />
+    </View>
+  );
 };
 ```
 
-## Audio Formats
+### Audio Level Monitoring
 
-### iOS Supported Formats
+```tsx
+import React from "react";
+import { View, Button, Text } from "react-native";
+import { useAudioLevel } from "react-native-audio-chunk-recorder";
 
-- **AAC** (Advanced Audio Codec) - Default, best balance of quality and size
-- **Linear PCM** - Uncompressed, highest quality
-- **AIFF** - Apple Interchange File Format
-- **CAF** - Core Audio Format (Apple's container format)
-- **FLAC** - Free Lossless Audio Codec (iOS 11+)
+export const AudioLevelScreen = () => {
+  const { data, startMonitoring, stopMonitoring, isMonitoring } = useAudioLevel(
+    {
+      onAudioDetected: (level) => console.log("Audio detected:", level),
+      onAudioLost: () => console.log("Audio lost"),
+      onLevelChange: (data) =>
+        console.log("Level:", data.level, "HasAudio:", data.hasAudio),
+    }
+  );
 
-### Android Supported Formats
+  return (
+    <View>
+      <Button
+        title={isMonitoring ? "Stop Monitoring" : "Start Monitoring"}
+        onPress={isMonitoring ? stopMonitoring : startMonitoring}
+      />
+      <Text>Audio Level: {(data.level * 100).toFixed(1)}%</Text>
+      <Text>Has Audio: {data.hasAudio ? "Yes" : "No"}</Text>
+    </View>
+  );
+};
+```
 
-- **AAC** - Advanced Audio Codec (recommended)
-- **AMR_NB** - Adaptive Multi-Rate Narrowband (8kHz)
-- **AMR_WB** - Adaptive Multi-Rate Wideband (16kHz)
-- **MPEG_4** - MPEG-4 audio format
-- **THREE_GPP** - 3GPP multimedia format
-- **WEBM** - WebM audio format (Android 5.0+)
-- **OGG** - OGG Vorbis format (Android 10+)
+### VU Meter Component
 
-### Recommended Settings
+```tsx
+import React, { useEffect } from "react";
+import { View, StyleSheet } from "react-native";
+import { useAudioLevel } from "react-native-audio-chunk-recorder";
 
-- **Sample Rate**: 44100 Hz (CD quality) or 16000 Hz (speech optimized)
-- **Bit Rate**: 128 kbps (high quality) or 64 kbps (speech optimized)
-- **Format**: AAC (best compatibility across platforms)
+export const VUMeter = () => {
+  const { data, startMonitoring, stopMonitoring } = useAudioLevel({
+    throttleMs: 16, // 60 FPS for smooth animation
+    transformLevel: (level) => Math.pow(level, 0.3), // Logarithmic scaling
+  });
 
-## API Reference
+  useEffect(() => {
+    startMonitoring();
+    return () => stopMonitoring();
+  }, []);
 
-### useAudioRecorderCore(options?)
+  return (
+    <View style={styles.container}>
+      <View
+        style={[
+          styles.meter,
+          {
+            height: `${data.level * 100}%`,
+            backgroundColor: data.hasAudio ? "#0f0" : "#666",
+          },
+        ]}
+      />
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    height: 100,
+    backgroundColor: "#333",
+    borderRadius: 8,
+    overflow: "hidden",
+  },
+  meter: {
+    width: "100%",
+    transition: "height 0.1s ease-out",
+  },
+});
+```
+
+### Voice Activity Detection
+
+```tsx
+import React, { useState } from "react";
+import { View, Text, Button } from "react-native";
+import { useAudioLevel } from "react-native-audio-chunk-recorder";
+
+export const VoiceActivityDetector = () => {
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
+  const { startMonitoring, stopMonitoring } = useAudioLevel({
+    audioThreshold: 0.005, // Adjust sensitivity
+    onAudioDetected: () => setIsSpeaking(true),
+    onAudioLost: () => setIsSpeaking(false),
+  });
+
+  return (
+    <View>
+      <Text style={{ fontSize: 18, fontWeight: "bold" }}>
+        {isSpeaking ? "🎤 Speaking..." : "🔇 Silent"}
+      </Text>
+      <Button title="Start Monitoring" onPress={startMonitoring} />
+      <Button title="Stop Monitoring" onPress={stopMonitoring} />
+    </View>
+  );
+};
+```
+
+### Coordinated Usage (Multiple Hooks)
+
+```tsx
+import React from "react";
+import { View, Button, Text } from "react-native";
+import {
+  useAudioLevel,
+  useAudioRecorderCore,
+} from "react-native-audio-chunk-recorder";
+
+export const CoordinatedScreen = () => {
+  // Audio level monitoring
+  const {
+    data: levelData,
+    startMonitoring,
+    stopMonitoring,
+    isMonitoring,
+  } = useAudioLevel({
+    onAudioDetected: (level) => console.log("Audio detected:", level),
+    onAudioLost: () => console.log("Audio lost"),
+  });
+
+  // Audio recording
+  const { isRecording, startRecording, stopRecording, chunks } =
+    useAudioRecorderCore({
+      onChunkReady: (chunk) => console.log("Chunk ready:", chunk),
+    });
+
+  return (
+    <View>
+      {/* Audio Level Section */}
+      <View>
+        <Text>Audio Level: {(levelData.level * 100).toFixed(1)}%</Text>
+        <Text>Has Audio: {levelData.hasAudio ? "Yes" : "No"}</Text>
+        <Button
+          title={isMonitoring ? "Stop Monitoring" : "Start Monitoring"}
+          onPress={isMonitoring ? stopMonitoring : startMonitoring}
+        />
+      </View>
+
+      {/* Recording Section */}
+      <View>
+        <Text>Recording: {isRecording ? "Active" : "Inactive"}</Text>
+        <Text>Chunks: {chunks.length}</Text>
+        <Button
+          title={isRecording ? "Stop Recording" : "Start Recording"}
+          onPress={isRecording ? stopRecording : startRecording}
+        />
+      </View>
+    </View>
+  );
+};
+```
+
+**Note**: The AudioManager automatically coordinates between hooks to prevent conflicts. When you start recording, monitoring will be stopped automatically, and vice versa.
+
+## AudioManager
+
+The AudioManager is a global singleton that coordinates all audio activities to prevent conflicts between hooks.
+
+### Features
+
+- 🎯 **Conflict Prevention**: Only one audio activity (recording or monitoring) can be active at a time
+- 🔄 **Automatic Coordination**: Hooks are automatically notified of state changes
+- 🛡️ **Error Prevention**: Prevents "Recording is already in progress" errors
+- 📊 **State Management**: Centralized state tracking for all audio activities
+
+### Usage
+
+```tsx
+import { audioManager } from "react-native-audio-chunk-recorder";
+
+// Get current state
+const state = audioManager.getState();
+console.log("Is recording:", state.isRecording);
+console.log("Is monitoring:", state.isMonitoring);
+console.log("Has active audio:", state.hasActiveAudio);
+
+// Listen to state changes
+const unsubscribe = audioManager.addListener((type, active) => {
+  console.log(`${type} is now ${active ? "active" : "inactive"}`);
+});
+
+// Force stop all audio activities
+await audioManager.forceStopAll();
+
+// Cleanup when app shuts down
+audioManager.cleanup();
+```
+
+### API Reference
+
+#### useAudioRecorderCore(options?)
 
 Main hook for audio recording functionality.
 
@@ -290,7 +454,209 @@ interface AudioRecorderCoreReturn {
 }
 ```
 
+#### useAudioLevel(options?)
+
+Specialized hook for audio level monitoring only.
+
+#### Options
+
+```typescript
+interface UseAudioLevelOptions {
+  /** Throttle audio level updates in milliseconds (default: 100) */
+  throttleMs?: number;
+  /** Disable throttling completely for debugging (default: false) */
+  disableThrottling?: boolean;
+  /** Debug mode - logs all native updates and disables throttling (default: false) */
+  debug?: boolean;
+  /** Callback when audio level changes */
+  onLevelChange?: (data: AudioLevelData) => void;
+  /** Callback when audio is detected */
+  onAudioDetected?: (level: number) => void;
+  /** Callback when audio is lost */
+  onAudioLost?: () => void;
+  /** Callback when an error occurs */
+  onError?: (error: any) => void;
+  /** Auto-start monitoring when hook mounts */
+  autoStart?: boolean;
+}
+```
+
+#### Returns
+
+```typescript
+interface UseAudioLevelReturn {
+  /** Current audio level data */
+  data: AudioLevelData;
+  /** Start audio level monitoring */
+  startMonitoring: () => Promise<void>;
+  /** Stop audio level monitoring */
+  stopMonitoring: () => Promise<void>;
+  /** Whether monitoring is currently active */
+  isMonitoring: boolean;
+  /** Error message if any */
+  error?: string;
+  /** Debug method to check AudioRecord state */
+  getAudioRecordState: () => Promise<string>;
+}
+```
+
+## Error Tracking
+
+The library supports optional error tracking integration for monitoring and debugging issues in production. This is especially useful for audio recording applications where errors can be critical for user experience.
+
+### Available Error Trackers
+
+#### 1. Sentry Integration (Recommended for Production)
+
+```tsx
+import { createSentryErrorTracker } from "react-native-audio-chunk-recorder";
+
+// Initialize Sentry error tracker
+const sentryTracker = createSentryErrorTracker("YOUR_SENTRY_DSN");
+
+const { startRecording } = useAudioRecorderCore({
+  errorTracker: sentryTracker,
+});
+```
+
+**Requirements**: Install `@sentry/react-native` in your project
+
+```bash
+npm install @sentry/react-native
+```
+
+#### 2. Console Error Tracker (Development)
+
+```tsx
+import { createConsoleErrorTracker } from "react-native-audio-chunk-recorder";
+
+// For development and debugging
+const consoleTracker = createConsoleErrorTracker();
+
+const { startRecording } = useAudioRecorderCore({
+  errorTracker: consoleTracker,
+});
+```
+
+#### 3. No-op Error Tracker (Default)
+
+If no error tracker is provided, the library uses a no-op implementation that does nothing.
+
+### Error Tracking Features
+
+The error tracking system captures:
+
+- **Recording Errors**: Failed start/stop operations, permission issues
+- **Native Module Errors**: Errors from the underlying audio recording system
+- **Interruption Events**: Phone calls, device disconnections
+- **Upload Failures**: Chunk upload errors when using chunk uploaders
+- **Permission Issues**: Microphone permission failures
+- **Breadcrumbs**: Contextual information about audio operations
+
+### Advanced Error Tracking Configuration
+
+```tsx
+import { createSentryErrorTracker } from "react-native-audio-chunk-recorder";
+
+const sentryTracker = createSentryErrorTracker("YOUR_SENTRY_DSN");
+
+const { startRecording, isRecording, audioLevel } = useAudioRecorderCore({
+  errorTracker: sentryTracker,
+
+  // Set user context for better error tracking
+  onError: (error) => {
+    sentryTracker.setUser("user123");
+    sentryTracker.setTag("component", "audio_recorder");
+    sentryTracker.setContext("recording_state", {
+      isRecording,
+      audioLevel,
+      timestamp: Date.now(),
+    });
+  },
+
+  // Track interruptions
+  onInterruption: (interruption) => {
+    sentryTracker.addBreadcrumb({
+      message: `Audio interruption: ${interruption.type}`,
+      category: "audio_interruption",
+      level: "warning",
+      data: interruption,
+    });
+  },
+});
+```
+
+### Error Tracking with Audio Level Monitoring
+
+```tsx
+import {
+  useAudioLevel,
+  createSentryErrorTracker,
+} from "react-native-audio-chunk-recorder";
+
+const sentryTracker = createSentryErrorTracker("YOUR_SENTRY_DSN");
+
+const { startMonitoring, stopMonitoring } = useAudioLevel({
+  errorTracker: sentryTracker,
+
+  onError: (error) => {
+    sentryTracker.captureMessage("Audio level monitoring error", "error");
+  },
+});
+```
+
+### Custom Error Tracker Implementation
+
+You can implement your own error tracker by following the `ErrorTracker` interface:
+
+```tsx
+import { ErrorTracker } from "react-native-audio-chunk-recorder";
+
+const customErrorTracker: ErrorTracker = {
+  captureException: (error, context) => {
+    // Your error reporting logic
+    console.error("Custom error tracking:", error, context);
+  },
+
+  captureMessage: (message, level) => {
+    // Your message reporting logic
+    console.log(`[${level}] ${message}`);
+  },
+
+  setUser: (userId) => {
+    // Set user context
+  },
+
+  setTag: (key, value) => {
+    // Set tag for filtering
+  },
+
+  setContext: (name, context) => {
+    // Set additional context
+  },
+
+  addBreadcrumb: (breadcrumb) => {
+    // Add breadcrumb for debugging
+  },
+};
+
+const { startRecording } = useAudioRecorderCore({
+  errorTracker: customErrorTracker,
+});
+```
+
+### Error Tracking Best Practices
+
+1. **Use Sentry for Production**: Provides comprehensive error monitoring and debugging
+2. **Set User Context**: Helps identify which users are experiencing issues
+3. **Add Relevant Tags**: Use tags to filter and categorize errors
+4. **Include Device Info**: Add device context for better debugging
+5. **Track Performance**: Monitor recording performance and failures
+6. **Handle Gracefully**: Always provide fallback behavior when errors occur
+
 ## Methods and Properties Reference
+
+### useAudioRecorderCore
 
 | Name                       | Description                                                  |
 | -------------------------- | ------------------------------------------------------------ |
@@ -318,113 +684,17 @@ interface AudioRecorderCoreReturn {
 | `onInterruption(callback)` | Fires when recording is interrupted (calls, etc.)            |
 | `onStateChange(callback)`  | Fires when recording state changes                           |
 
-## Providers
+### useAudioLevel
 
-### AlertProvider
+| Name                   | Description                                          |
+| ---------------------- | ---------------------------------------------------- |
+| **State Properties**   |
+| `data.level`           | Current audio level (0-1) from native module         |
+| `data.hasAudio`        | Boolean indicating if audio is detected              |
+| `isMonitoring`         | Boolean indicating if monitoring is currently active |
+| `error`                | Error message if any occurred                        |
+| **Monitoring Actions** |
+| `startMonitoring()`    | Starts audio level monitoring                        |
+| `stopMonitoring()`     | Stops audio level monitoring                         |
 
-Interface for showing alerts to users:
-
-```typescript
-interface AlertProvider {
-  showAlert: (title: string, message: string, buttons: AlertButton[]) => void;
-}
-```
-
-**Default**: `reactNativeAlertProvider` - Uses React Native's `Alert.alert()`
-
-### StateManager
-
-Interface for global state management:
-
-```typescript
-interface StateManager {
-  getState: <T>(key: string) => T;
-  setState: <T>(key: string, value: T) => void;
-  subscribe: <T>(key: string, callback: (value: T) => void) => () => void;
-}
-```
-
-**Default**: `createSimpleStateManager()` - In-memory state management
-
-**Jotai**: `createJotaiStateManager(store, atoms)` - For apps using Jotai
-
-### InterruptionHandler
-
-Interface for handling audio interruptions:
-
-```typescript
-interface InterruptionHandler {
-  onInterruption: (data: InterruptionData) => void;
-  onDeviceDisconnected: (data: InterruptionData) => void;
-}
-```
-
-**Default**: Shows alerts for interruptions and device disconnections
-
-## State Management Integration
-
-### With Jotai
-
-```tsx
-import { atom, useAtom } from "jotai";
-import { createJotaiStateManager } from "react-native-audio-chunk-recorder";
-
-const audioInterruptionAtom = atom(false);
-const audioAlertActiveAtom = atom(false);
-
-const atoms = {
-  audioInterruption: audioInterruptionAtom,
-  audioAlertActive: audioAlertActiveAtom,
-};
-
-const stateManager = createJotaiStateManager(store, atoms);
-```
-
-### With Redux
-
-Create your own adapter:
-
-```tsx
-import { useDispatch, useSelector } from "react-redux";
-
-const createReduxStateManager = () => ({
-  getState: (key) => useSelector((state) => state[key]),
-  setState: (key, value) => {
-    const dispatch = useDispatch();
-    dispatch({ type: `SET_${key.toUpperCase()}`, payload: value });
-  },
-  subscribe: (key, callback) => {
-    // Redux subscription logic
-  },
-});
-```
-
-## Types
-
-All TypeScript types are exported for custom implementations:
-
-```tsx
-import type {
-  ChunkData,
-  ErrorData,
-  InterruptionData,
-  AudioLevelData,
-  RecordingOptions,
-  AlertProvider,
-  StateManager,
-  InterruptionHandler,
-} from "react-native-audio-chunk-recorder";
-```
-
-## Architecture
-
-This library follows a modular architecture that allows you to:
-
-1. **Inject Dependencies**: Provide your own alert system, state management, and upload logic
-2. **Customize Behavior**: Handle interruptions and errors according to your app's needs
-3. **Framework Agnostic**: Core logic works with any React setup
-4. **Type Safe**: Full TypeScript support with proper interfaces
-
-## License
-
-MIT
+| `getAudioRecordState()`

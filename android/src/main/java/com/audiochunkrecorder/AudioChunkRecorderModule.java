@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.util.Log;
@@ -39,7 +40,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Main module that exposes the API to JavaScript and coordinates
  * the audio recording functionality through specialized components.
  */
-public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
+public class AudioChunkRecorderModule extends ReactContextBaseJavaModule implements AudioManager.OnAudioFocusChangeListener {
     private static final String TAG = "AudioChunkRecorder";
 
     // Core components
@@ -47,6 +48,12 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     private final EventEmitter eventEmitter;
     private final PermissionManager permissionManager;
     private final FileManager fileManager;
+    private final AudioManager audioManager;
+    
+    // Interruption handling
+    private boolean interruptionEventSent = false;
+    private long lastInterruptionEndTime = 0;
+    private boolean hasAudioFocus = false;
     
     // Map pools for performance
     private final Queue<WritableMap> stateMapPool = new ConcurrentLinkedQueue<>();
@@ -61,6 +68,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         this.permissionManager = new PermissionManager(reactContext);
         this.fileManager = new FileManager(reactContext);
         this.recorderManager = new AudioRecorderManager(eventEmitter, fileManager);
+        this.audioManager = (AudioManager) reactContext.getSystemService(Context.AUDIO_SERVICE);
         
         initializeMapPool();
         Log.i(TAG, "AudioChunkRecorderModule initialized");
@@ -110,6 +118,16 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         }
 
         try {
+            // Reset interruption state for new recording session
+            interruptionEventSent = false;
+            lastInterruptionEndTime = 0;
+            
+            // Request audio focus for recording
+            if (!requestAudioFocus()) {
+                promise.reject("audio_focus_denied", "Could not obtain audio focus");
+                return;
+            }
+            
             int sampleRate = options.hasKey("sampleRate") ? options.getInt("sampleRate") : 16000;
             double chunkDuration = options.hasKey("chunkSeconds") ? options.getDouble("chunkSeconds") : 30.0;
             
@@ -125,6 +143,12 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     public void stopRecording(Promise promise) {
         try {
             recorderManager.stopRecording();
+            
+            // Abandon audio focus and reset interruption state
+            abandonAudioFocus();
+            interruptionEventSent = false;
+            lastInterruptionEndTime = 0;
+            
             promise.resolve("Recording stopped");
         } catch (Exception e) {
             Log.e(TAG, "Error stopping recording", e);
@@ -253,6 +277,12 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         }
 
         try {
+            // Request audio focus for monitoring
+            if (!requestAudioFocus()) {
+                promise.reject("audio_focus_denied", "Could not obtain audio focus");
+                return;
+            }
+            
             recorderManager.startAudioLevelPreview();
             promise.resolve(null);
         } catch (Exception e) {
@@ -265,6 +295,10 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     public void stopAudioLevelPreview(Promise promise) {
         try {
             recorderManager.stopAudioLevelPreview();
+            
+            // Abandon audio focus
+            abandonAudioFocus();
+            
             promise.resolve(null);
         } catch (Exception e) {
             Log.e(TAG, "Failed to stop audio level preview", e);
@@ -290,11 +324,126 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     private void cleanup() {
         try {
             recorderManager.cleanup();
+            
+            // Abandon audio focus and reset interruption state
+            abandonAudioFocus();
+            interruptionEventSent = false;
+            lastInterruptionEndTime = 0;
+            
             stateMapPool.clear(); 
             errorMapPool.clear(); 
             chunkMapPool.clear();
         } catch (Exception e) {
             Log.e(TAG, "cleanup error", e);
+        }
+    }
+
+    @Override
+    public void onAudioFocusChange(int focusChange) {
+        Log.d(TAG, "Audio focus change: " + focusChange);
+        
+        switch (focusChange) {
+            case AudioManager.AUDIOFOCUS_LOSS:
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+                handleInterruptionBegan();
+                break;
+                
+            case AudioManager.AUDIOFOCUS_GAIN:
+                handleInterruptionEnded();
+                break;
+                
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                // For recording, we treat this as a full interruption
+                handleInterruptionBegan();
+                break;
+        }
+    }
+    
+    /**
+     * Handle interruption began (phone call, other app, etc.)
+     */
+    private void handleInterruptionBegan() {
+        boolean isActive = recorderManager.isRecording() || recorderManager.isPreviewActive();
+        
+        if (!isActive || interruptionEventSent) {
+            return;
+        }
+        
+        Log.d(TAG, "Audio interruption began");
+        
+        // Pause recording or stop preview for safety
+        if (recorderManager.isRecording()) {
+            recorderManager.pauseRecording();
+        } else if (recorderManager.isPreviewActive()) {
+            recorderManager.stopAudioLevelPreview();
+        }
+        
+        // Send interruption event
+        WritableMap interruptionData = Arguments.createMap();
+        interruptionData.putString("type", "began");
+        interruptionData.putString("reason", "phone_call_or_other_app");
+        interruptionData.putBoolean("wasRecording", recorderManager.isRecording());
+        interruptionData.putBoolean("nativePaused", true);
+        
+        eventEmitter.sendInterruptionEvent(interruptionData);
+        interruptionEventSent = true;
+    }
+    
+    /**
+     * Handle interruption ended
+     */
+    private void handleInterruptionEnded() {
+        long currentTime = System.currentTimeMillis();
+        
+        // Prevent duplicate events within 1 second
+        if (currentTime - lastInterruptionEndTime < 1000) {
+            return;
+        }
+        
+        if (interruptionEventSent) {
+            Log.d(TAG, "Audio interruption ended");
+            
+            lastInterruptionEndTime = currentTime;
+            
+            // Send interruption end event
+            WritableMap interruptionData = Arguments.createMap();
+            interruptionData.putString("type", "ended");
+            interruptionData.putBoolean("shouldResume", true);
+            interruptionData.putBoolean("canResume", recorderManager.isRecording() && recorderManager.isPaused());
+            
+            eventEmitter.sendInterruptionEvent(interruptionData);
+            interruptionEventSent = false;
+        }
+    }
+    
+    /**
+     * Request audio focus for recording
+     */
+    private boolean requestAudioFocus() {
+        if (hasAudioFocus) {
+            return true;
+        }
+        
+        int result = audioManager.requestAudioFocus(
+            this,
+            AudioManager.STREAM_MUSIC,
+            AudioManager.AUDIOFOCUS_GAIN
+        );
+        
+        hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
+        Log.d(TAG, "Audio focus request result: " + result + ", granted: " + hasAudioFocus);
+        
+        return hasAudioFocus;
+    }
+    
+    /**
+     * Abandon audio focus
+     */
+    private void abandonAudioFocus() {
+        if (hasAudioFocus) {
+            audioManager.abandonAudioFocus(this);
+            hasAudioFocus = false;
+            Log.d(TAG, "Audio focus abandoned");
         }
     }
 }

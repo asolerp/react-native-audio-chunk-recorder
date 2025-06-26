@@ -4,6 +4,7 @@ import {
   AudioChunkRecorderEventEmitter,
 } from "../NativeAudioChunkRecorder";
 import { audioManager } from "../providers/audioManager";
+import { noopErrorTracker } from "../providers/errorTracker";
 
 export interface AudioLevelData {
   level: number;
@@ -27,6 +28,8 @@ export interface UseAudioLevelOptions {
   onError?: (error: any) => void;
   /** Auto-start monitoring when hook mounts */
   autoStart?: boolean;
+  /** Error tracker for monitoring errors */
+  errorTracker?: any;
 }
 
 export interface UseAudioLevelReturn {
@@ -102,7 +105,6 @@ class AudioLevelEventListenerManager {
     const errorListener = AudioChunkRecorderEventEmitter.addListener(
       "onError",
       (error: any) => {
-        console.error("useAudioLevel: Native error:", error);
         this.notifyListeners("onError", error);
         options.onError?.(error);
       }
@@ -119,63 +121,17 @@ class AudioLevelEventListenerManager {
     const now = Date.now();
     const timeSinceLastUpdate = now - this.lastAudioLevelUpdate;
 
-    // Debug logging - always log received data
-    console.log(
-      `[useAudioLevel] 📨 Received from native: level=${levelData.level.toFixed(
-        6
-      )}, hasAudio=${
-        levelData.hasAudio
-      }, time since last: ${timeSinceLastUpdate}ms`
-    );
-
-    if (options.debug) {
-      console.log(`[useAudioLevel] 🐛 DEBUG MODE: Processing all updates`);
-    }
-
     if (
       !options.disableThrottling &&
       !options.debug &&
       timeSinceLastUpdate < (options.throttleMs || 100)
     ) {
-      console.log(
-        `[useAudioLevel] ⏱️ Throttled update (${timeSinceLastUpdate}ms < ${
-          options.throttleMs || 100
-        }ms) - SKIPPING UPDATE`
-      );
       return; // Throttle updates
     }
-
-    console.log(
-      `[useAudioLevel] ✅ Processing update after ${timeSinceLastUpdate}ms`
-    );
 
     // Use native values directly without any processing
     const nativeLevel = levelData.level;
     const nativeHasAudio = levelData.hasAudio;
-
-    console.log(
-      `[useAudioLevel] 📊 Native values: level=${nativeLevel.toFixed(
-        6
-      )}, hasAudio=${nativeHasAudio}`
-    );
-
-    // Debug: Log when level is very low but not zero
-    if (nativeLevel > 0 && nativeLevel < 0.001) {
-      console.log(
-        `[useAudioLevel] 🔍 Very low level detected: ${nativeLevel.toFixed(
-          8
-        )} (background noise?)`
-      );
-    }
-
-    // Debug: Log when hasAudio is false but level > 0
-    if (!nativeHasAudio && nativeLevel > 0) {
-      console.log(
-        `[useAudioLevel] 🤔 hasAudio=false but level=${nativeLevel.toFixed(
-          6
-        )} > 0`
-      );
-    }
 
     const newData: AudioLevelData = {
       level: nativeLevel,
@@ -239,6 +195,12 @@ export function useAudioLevel(
     setState((prev) => ({ ...prev, ...updates }));
   }, []);
 
+  // Error tracker - use provided or fallback to no-op
+  const errorTracker = useMemo(
+    () => options.errorTracker || noopErrorTracker,
+    [options.errorTracker]
+  );
+
   // Initialize service - only once
   useEffect(() => {
     try {
@@ -280,19 +242,19 @@ export function useAudioLevel(
 
   // Memoized actions to prevent unnecessary re-creation
   const startMonitoring = useCallback(async () => {
-    console.log("useAudioLevel: 🚀 startMonitoring called");
-
     // Check if already monitoring to avoid conflicts
     if (state.isMonitoring) {
-      console.log(
-        "useAudioLevel: ⚠️ Already monitoring, skipping start request"
-      );
       return;
     }
 
     try {
       updateState({ error: undefined });
-      console.log("useAudioLevel: 🚀 Starting monitoring via AudioManager...");
+
+      errorTracker.addBreadcrumb({
+        message: "Starting audio level monitoring",
+        category: "audio_monitoring",
+        level: "info",
+      });
 
       // Use AudioManager to start monitoring
       const result = await audioManager.startMonitoring({
@@ -301,17 +263,23 @@ export function useAudioLevel(
       });
 
       updateState({ isMonitoring: true });
-      console.log("useAudioLevel: 🚀 Monitoring started successfully:", result);
     } catch (error) {
-      console.error("useAudioLevel: ❌ Start monitoring failed:", error);
       updateState({ error: `Failed to start monitoring: ${error}` });
+      errorTracker.captureException(error as Error, {
+        action: "start_monitoring",
+      });
       throw error;
     }
-  }, [state.isMonitoring, updateState]);
+  }, [state.isMonitoring, updateState, errorTracker]);
 
   const stopMonitoring = useCallback(async () => {
     try {
-      console.log("useAudioLevel: 🛑 Stopping monitoring via AudioManager...");
+      errorTracker.addBreadcrumb({
+        message: "Stopping audio level monitoring",
+        category: "audio_monitoring",
+        level: "info",
+      });
+
       await audioManager.stopMonitoring();
 
       // Reset state
@@ -321,14 +289,14 @@ export function useAudioLevel(
         hasAudio: false,
         error: undefined,
       });
-
-      console.log("useAudioLevel: 🛑 Monitoring stopped successfully");
     } catch (error) {
-      console.error("useAudioLevel: Stop monitoring failed:", error);
       updateState({ error: `Failed to stop monitoring: ${error}` });
+      errorTracker.captureException(error as Error, {
+        action: "stop_monitoring",
+      });
       throw error;
     }
-  }, [updateState]);
+  }, [updateState, errorTracker]);
 
   // Auto start monitoring when conditions are met
   useEffect(() => {
@@ -338,10 +306,8 @@ export function useAudioLevel(
       !autoStartAttemptedRef.current &&
       serviceRef.current
     ) {
-      console.log("useAudioLevel: Auto-starting monitoring...");
       autoStartAttemptedRef.current = true;
       startMonitoring().catch((error: unknown) => {
-        console.error("useAudioLevel: Auto-start failed:", error);
         // Reset flag on error so it can try again
         autoStartAttemptedRef.current = false;
       });
@@ -351,16 +317,9 @@ export function useAudioLevel(
   // Listen to AudioManager state changes
   useEffect(() => {
     const unsubscribe = audioManager.addListener((type, active) => {
-      console.log(
-        `useAudioLevel: 📢 AudioManager notification - ${type}: ${active}`
-      );
-
       if (type === "monitoring") {
         if (!active && state.isMonitoring) {
           // Monitoring was stopped by another hook or the manager
-          console.log(
-            "useAudioLevel: 📢 Monitoring stopped by AudioManager, updating state"
-          );
           updateState({
             isMonitoring: false,
             audioLevel: 0,
@@ -379,26 +338,15 @@ export function useAudioLevel(
     const wasAudio = previousHasAudioRef.current;
     const isAudio = state.hasAudio;
 
-    console.log(
-      `[useAudioLevel] 🔍 Audio state check: wasAudio=${wasAudio}, isAudio=${isAudio}, level=${state.audioLevel.toFixed(
-        6
-      )}`
-    );
-
     // Only call callbacks on state transitions
     if (isAudio && !wasAudio && options.onAudioDetected) {
-      console.log("useAudioLevel: 🔊 Audio detected, calling onAudioDetected");
       options.onAudioDetected(state.audioLevel);
     } else if (!isAudio && wasAudio && options.onAudioLost) {
-      console.log("useAudioLevel: 🔇 Audio lost, calling onAudioLost");
       options.onAudioLost();
     }
 
     // Update previous state reference
     previousHasAudioRef.current = isAudio;
-    console.log(
-      `[useAudioLevel] 📝 Updated previousHasAudioRef to: ${isAudio}`
-    );
   }, [
     state.hasAudio,
     state.audioLevel,
@@ -453,63 +401,3 @@ export function useAudioLevel(
 
   return returnValue;
 }
-
-/**
- * USAGE EXAMPLES:
- *
- * // Basic usage - Uses recording pipeline with 100ms chunks (no file saving)
- * const { data, startMonitoring, stopMonitoring, isMonitoring } = useAudioLevel();
- *
- * // With custom options
- * const { data } = useAudioLevel({
- *   audioThreshold: 0.01,
- *   throttleMs: 50,
- *   transformLevel: (level) => Math.pow(level, 0.3), // Logarithmic scaling
- *   onAudioDetected: (level) => console.log('Audio detected:', level),
- *   onAudioLost: () => console.log('Audio lost'),
- *   autoStart: true,
- * });
- *
- * // VU Meter component - High performance (60 FPS)
- * function VUMeter() {
- *   const { data, startMonitoring, stopMonitoring, isMonitoring } = useAudioLevel({
- *     throttleMs: 16, // 60 FPS
- *     transformLevel: (level) => Math.pow(level, 0.3),
- *   });
- *
- *   useEffect(() => {
- *     startMonitoring();
- *     return () => stopMonitoring();
- *   }, []);
- *
- *   return (
- *     <View style={{ height: 100, backgroundColor: '#333' }}>
- *       <View
- *         style={{
- *           height: `${data.level * 100}%`,
- *           backgroundColor: data.hasAudio ? '#0f0' : '#666'
- *         }}
- *       />
- *     </View>
- *   );
- * }
- *
- * // Voice activity detection
- * function VoiceActivityDetector() {
- *   const [isSpeaking, setIsSpeaking] = useState(false);
- *
- *   const { startMonitoring, stopMonitoring } = useAudioLevel({
- *     audioThreshold: 0.005,
- *     onAudioDetected: () => setIsSpeaking(true),
- *     onAudioLost: () => setIsSpeaking(false),
- *   });
- *
- *   return (
- *     <View>
- *       <Text>{isSpeaking ? 'Speaking...' : 'Silent'}</Text>
- *       <Button title="Start Monitoring" onPress={startMonitoring} />
- *       <Button title="Stop Monitoring" onPress={stopMonitoring} />
- *     </View>
- *   );
- * }
- */

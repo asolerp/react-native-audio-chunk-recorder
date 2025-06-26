@@ -71,4 +71,11 @@ public class EventEmitter {
         map.putInt("seq", sequence);
         sendEvent("onChunkReady", map);
     }
+
+    /**
+     * Send interruption event
+     */
+    public void sendInterruptionEvent(WritableMap interruptionData) {
+        sendEvent("onInterruption", interruptionData);
+    }
 } 
