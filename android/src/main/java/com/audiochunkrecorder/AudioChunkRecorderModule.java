@@ -177,6 +177,11 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
+    public void isPreviewActive(Promise promise) { 
+        promise.resolve(recorderManager.isPreviewActive()); 
+    }
+
+    @ReactMethod
     public void getAudioLevel(Promise promise) { 
         promise.resolve(recorderManager.getAudioLevel()); 
     }
@@ -201,6 +206,7 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
         WritableMap state = getStateMap();
         state.putBoolean("isRecording", recorderManager.isRecording());
         state.putBoolean("isPaused", recorderManager.isPaused());
+        state.putBoolean("isPreviewActive", recorderManager.isPreviewActive());
         state.putBoolean("isAvailable", true);
         state.putBoolean("hasPermission", permissionManager.hasPermission());
         state.putInt("currentChunkIndex", recorderManager.getCurrentChunkIndex());
@@ -264,6 +270,11 @@ public class AudioChunkRecorderModule extends ReactContextBaseJavaModule {
             Log.e(TAG, "Failed to stop audio level preview", e);
             promise.reject("preview_stop_failed", e.getMessage());
         }
+    }
+
+    @ReactMethod
+    public void getAudioRecordState(Promise promise) { 
+        promise.resolve(recorderManager.getAudioRecordState()); 
     }
 
     /* ==============================================================

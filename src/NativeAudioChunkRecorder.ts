@@ -31,6 +31,9 @@ export interface NativeAudioChunkRecorderInterface {
   checkPermissions(): Promise<boolean>;
   isAvailable(): Promise<boolean>;
 
+  // Debug methods
+  getAudioRecordState(): Promise<string>;
+
   // Cleanup method
   clearAllChunkFiles(): Promise<string>;
 }

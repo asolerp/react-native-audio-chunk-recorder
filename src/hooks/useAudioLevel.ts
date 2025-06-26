@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState, useRef } from "react";
-import { Alert } from "react-native";
 import {
   NativeAudioChunkRecorder,
   AudioChunkRecorderEventEmitter,
@@ -36,28 +35,17 @@ export interface UseAudioLevelReturn {
   stopMonitoring: () => Promise<void>;
   /** Whether monitoring is currently active */
   isMonitoring: boolean;
-  /** Check if microphone permission is granted */
-  hasPermissions: boolean;
-  /** Request microphone permission */
-  requestPermissions: () => Promise<boolean>;
-  /** Check if native module is available */
-  isNativeModuleAvailable: boolean;
   /** Error message if any */
   error?: string;
+  /** Debug method to check AudioRecord state */
+  getAudioRecordState: () => Promise<string>;
 }
 
 /**
- * useAudioLevel - Specialized hook for audio level monitoring
+ * useAudioLevel - Simplified version for audio level monitoring
  *
- * This hook provides audio level monitoring functionality independent
- * of recording. It can be used for:
- * - VU meters and audio visualizations
- * - Voice activity detection
- * - Audio input monitoring
- * - Sound level indicators
- *
- * @param options Configuration options for audio level monitoring
- * @returns Audio level monitoring interface
+ * This version assumes the native module is already configured and available.
+ * Much simpler than the full version - similar to useAudioRecorderCore approach.
  */
 export function useAudioLevel(
   options: UseAudioLevelOptions = {}
@@ -78,61 +66,12 @@ export function useAudioLevel(
     hasAudio: false,
   });
   const [isMonitoring, setIsMonitoring] = useState(false);
-  const [hasPermissions, setHasPermissions] = useState(false);
-  const [isNativeModuleAvailable, setIsNativeModuleAvailable] = useState(false);
   const [error, setError] = useState<string>();
 
   // Refs
   const listenerRef = useRef<any>(null);
   const lastUpdateRef = useRef(Date.now());
   const lastHasAudioRef = useRef(false);
-  const isStartingRef = useRef(false);
-
-  // Check native module availability
-  const checkNativeModuleAvailability =
-    useCallback(async (): Promise<boolean> => {
-      try {
-        const isAvailable = await NativeAudioChunkRecorder.isAvailable();
-        setIsNativeModuleAvailable(isAvailable);
-        return isAvailable;
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        setError(`Native module not available: ${errorMessage}`);
-        setIsNativeModuleAvailable(false);
-        return false;
-      }
-    }, []);
-
-  // Check permissions
-  const checkPermissions = useCallback(async (): Promise<boolean> => {
-    try {
-      const hasPermission = await NativeAudioChunkRecorder.checkPermissions();
-      setHasPermissions(hasPermission);
-      return hasPermission;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      setError(`Permission check failed: ${errorMessage}`);
-      return false;
-    }
-  }, []);
-
-  // Request permissions
-  const requestPermissions = useCallback(async (): Promise<boolean> => {
-    try {
-      // This would typically use a permission library like react-native-permissions
-      // For now, we'll show an alert and return false
-      Alert.alert(
-        "Permission Required",
-        "Microphone permission is required to monitor audio levels.",
-        [{ text: "OK" }]
-      );
-      return false;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      setError(`Permission request failed: ${errorMessage}`);
-      return false;
-    }
-  }, []);
 
   // Handle audio level updates with throttling
   const handleAudioLevel = useCallback(
@@ -178,34 +117,12 @@ export function useAudioLevel(
     ]
   );
 
-  // Start monitoring
+  // Start monitoring - Simplified version
   const startMonitoring = useCallback(async () => {
-    if (isStartingRef.current || isMonitoring) {
-      return;
-    }
-
-    isStartingRef.current = true;
-    setError(undefined);
+    if (isMonitoring) return;
 
     try {
-      // Check native module availability
-      if (!isNativeModuleAvailable) {
-        const isAvailable = await checkNativeModuleAvailability();
-        if (!isAvailable) {
-          throw new Error("Native module not available");
-        }
-      }
-
-      // Check permissions
-      if (!hasPermissions) {
-        const granted = await checkPermissions();
-        if (!granted) {
-          const requested = await requestPermissions();
-          if (!requested) {
-            throw new Error("Microphone permission not granted");
-          }
-        }
-      }
+      setError(undefined);
 
       // Remove existing listener
       if (listenerRef.current) {
@@ -226,18 +143,8 @@ export function useAudioLevel(
       const errorMessage = err instanceof Error ? err.message : String(err);
       setError(`Failed to start audio monitoring: ${errorMessage}`);
       console.error("useAudioLevel: Failed to start monitoring:", err);
-    } finally {
-      isStartingRef.current = false;
     }
-  }, [
-    isMonitoring,
-    isNativeModuleAvailable,
-    hasPermissions,
-    checkNativeModuleAvailability,
-    checkPermissions,
-    requestPermissions,
-    handleAudioLevel,
-  ]);
+  }, [isMonitoring, handleAudioLevel]);
 
   // Stop monitoring
   const stopMonitoring = useCallback(async () => {
@@ -281,22 +188,32 @@ export function useAudioLevel(
     };
   }, [isMonitoring, stopMonitoring]);
 
+  // Debug method to check AudioRecord state
+  const getAudioRecordState = useCallback(async () => {
+    try {
+      const state = await NativeAudioChunkRecorder.getAudioRecordState();
+      return state;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      console.error("useAudioLevel: Failed to get AudioRecord state:", err);
+      return errorMessage;
+    }
+  }, []);
+
   return {
     data,
     startMonitoring,
     stopMonitoring,
     isMonitoring,
-    hasPermissions,
-    requestPermissions,
-    isNativeModuleAvailable,
     error,
+    getAudioRecordState,
   };
 }
 
 /**
  * USAGE EXAMPLES:
  *
- * // Basic usage
+ * // Basic usage - Much simpler now!
  * const { data, startMonitoring, stopMonitoring, isMonitoring } = useAudioLevel();
  *
  * // With custom options
@@ -329,25 +246,6 @@ export function useAudioLevel(
  *           backgroundColor: data.hasAudio ? '#0f0' : '#666'
  *         }}
  *       />
- *     </View>
- *   );
- * }
- *
- * // Voice activity detection
- * function VoiceActivityDetector() {
- *   const [isSpeaking, setIsSpeaking] = useState(false);
- *
- *   const { startMonitoring, stopMonitoring } = useAudioLevel({
- *     audioThreshold: 0.005,
- *     onAudioDetected: () => setIsSpeaking(true),
- *     onAudioLost: () => setIsSpeaking(false),
- *   });
- *
- *   return (
- *     <View>
- *       <Text>{isSpeaking ? 'Speaking...' : 'Silent'}</Text>
- *       <Button title="Start Monitoring" onPress={startMonitoring} />
- *       <Button title="Stop Monitoring" onPress={stopMonitoring} />
  *     </View>
  *   );
  * }
