@@ -7,15 +7,14 @@ import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 
 /**
- * WavEncoder
- * ----------
+ * WavEncoder - PERFORMANCE OPTIMIZED
+ * ----------------------------------
  * Minimalist WAV encoder that allows *streaming* writing of PCM audio
  * 16-bit little-endian. Designed to be used with [RecorderEngine]:
  * each captured frame is passed to [writeSamples] and, when finishing the chunk,
  * [close] is called to patch the RIFF header with the real size.
  *
- * Does not maintain large internal *buffers* → memory remains stable
- * regardless of recording duration.
+ * 🚀 PERFORMANCE: Optimized buffering, reduced allocations, efficient I/O
  */
 class WavEncoder(
     private val file: File,
@@ -27,16 +26,29 @@ class WavEncoder(
     private val channel: FileChannel
     private var dataSize: Long = 0
     private var closed = false
+    
+    // PERFORMANCE: Pre-allocated buffer to reduce GC pressure
+    private val writeBuffer: ByteBuffer
+    private val headerBuffer: ByteBuffer
 
     init {
         require(bitsPerSample == 16.toShort()) { "Only PCM 16-bit is supported" }
         if (file.exists()) file.delete()
         channel = RandomAccessFile(file, "rw").channel
+        
+        // PERFORMANCE: Pre-allocate buffers
+        writeBuffer = ByteBuffer.allocateDirect(8192) // 4KB buffer for efficient writes
+        writeBuffer.order(ByteOrder.LITTLE_ENDIAN)
+        
+        headerBuffer = ByteBuffer.allocate(44) // Fixed header size
+        headerBuffer.order(ByteOrder.LITTLE_ENDIAN)
+        
         writeHeader(0) // provisional header, updated when closing
     }
 
     /**
      * Writes a block of PCM samples (little-endian) to the file.
+     * PERFORMANCE: Uses pre-allocated buffer for efficient writes
      * @param pcm buffer of 16-bit *Short* with full range amplitude.
      * @param length valid amount (in shorts) within the buffer.
      */
@@ -44,12 +56,28 @@ class WavEncoder(
         check(!closed) { "Encoder already closed" }
         if (length == 0) return
 
-        val byteBuf = ByteBuffer.allocateDirect(length * 2)
-        byteBuf.order(ByteOrder.LITTLE_ENDIAN)
-        for (i in 0 until length) byteBuf.putShort(pcm[i])
-        byteBuf.flip()
-        while (byteBuf.hasRemaining()) channel.write(byteBuf)
-        dataSize += (length * 2)
+        // PERFORMANCE: Use pre-allocated buffer instead of creating new ones
+        writeBuffer.clear()
+        
+        // PERFORMANCE: Write in chunks to avoid buffer overflow
+        var offset = 0
+        while (offset < length) {
+            val chunkSize = minOf(length - offset, writeBuffer.remaining() / 2)
+            
+            for (i in 0 until chunkSize) {
+                writeBuffer.putShort(pcm[offset + i])
+            }
+            
+            writeBuffer.flip()
+            while (writeBuffer.hasRemaining()) {
+                channel.write(writeBuffer)
+            }
+            writeBuffer.clear()
+            
+            offset += chunkSize
+        }
+        
+        dataSize += (length * 2L)
     }
 
     /**
@@ -70,27 +98,27 @@ class WavEncoder(
         val blockAlign = channels * bitsPerSample / 8
         val totalSize = 36 + actualDataSize
 
-        val hdr = ByteBuffer.allocate(44)
-        hdr.order(ByteOrder.LITTLE_ENDIAN)
-        hdr.put("RIFF".toByteArray())
-        hdr.putInt(totalSize.toInt())
-        hdr.put("WAVE".toByteArray())
+        // PERFORMANCE: Use pre-allocated header buffer
+        headerBuffer.clear()
+        headerBuffer.put("RIFF".toByteArray())
+        headerBuffer.putInt(totalSize.toInt())
+        headerBuffer.put("WAVE".toByteArray())
 
         // fmt chunk
-        hdr.put("fmt ".toByteArray())
-        hdr.putInt(16)              // Sub-chunk size
-        hdr.putShort(1)             // Audio format = PCM
-        hdr.putShort(channels)
-        hdr.putInt(sampleRate)
-        hdr.putInt(byteRate)
-        hdr.putShort(blockAlign.toShort())
-        hdr.putShort(bitsPerSample)
+        headerBuffer.put("fmt ".toByteArray())
+        headerBuffer.putInt(16)              // Sub-chunk size
+        headerBuffer.putShort(1)             // Audio format = PCM
+        headerBuffer.putShort(channels)
+        headerBuffer.putInt(sampleRate)
+        headerBuffer.putInt(byteRate)
+        headerBuffer.putShort(blockAlign.toShort())
+        headerBuffer.putShort(bitsPerSample)
 
         // data chunk
-        hdr.put("data".toByteArray())
-        hdr.putInt(actualDataSize.toInt())
-        hdr.flip()
-        while (hdr.hasRemaining()) channel.write(hdr)
+        headerBuffer.put("data".toByteArray())
+        headerBuffer.putInt(actualDataSize.toInt())
+        headerBuffer.flip()
+        while (headerBuffer.hasRemaining()) channel.write(headerBuffer)
     }
 
     companion object {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { Alert } from "react-native";
 import { useAudioPermissions } from "./useAudioPermissions";
 import {
@@ -44,12 +44,15 @@ export function useAudioRecorder(
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [autoRecording, setAutoRecording] = useState(
-    options.autoRecording || false
+    options?.autoRecording || false
   );
   const [isNativeModuleAvailable, setIsNativeModuleAvailable] = useState(false);
   const [nativeModuleError, setNativeModuleError] = useState<
     string | undefined
   >();
+
+  // Ref to track if we're in the process of starting recording
+  const isStartingRef = useRef(false);
 
   // Use the permissions hook
   const { hasPermissions, requestPermissions } = useAudioPermissions();
@@ -86,31 +89,49 @@ export function useAudioRecorder(
 
   const startRecording = useCallback(
     async (sampleRate: number = 16000, chunkSeconds: number = 30) => {
-      // Check native module availability first
-      if (!isNativeModuleAvailable) {
-        const isAvailable = await checkNativeModuleAvailability();
-        if (!isAvailable) {
-          const errorMessage = `Native module not available: ${nativeModuleError}`;
-          options.onError?.(errorMessage);
-          Alert.alert("Error", errorMessage);
-          return;
-        }
+      // Prevent starting recording if already recording or in the process of starting
+      if (isRecording || isStartingRef.current) {
+        console.warn(
+          "Recording already in progress or starting, ignoring start request"
+        );
+        return;
       }
 
-      // Check permissions before starting recording
-      if (!hasPermissions) {
-        const granted = await requestPermissions();
-        if (!granted) {
-          Alert.alert(
-            "Permission Required",
-            "Microphone permission is required to record audio.",
-            [{ text: "OK" }]
+      isStartingRef.current = true;
+
+      try {
+        // Check native module availability first
+        if (!isNativeModuleAvailable) {
+          const isAvailable = await checkNativeModuleAvailability();
+          if (!isAvailable) {
+            const errorMessage = `Native module not available: ${nativeModuleError}`;
+            options.onError?.(errorMessage);
+            Alert.alert("Error", errorMessage);
+            return;
+          }
+        }
+
+        // Check permissions before starting recording
+        if (!hasPermissions) {
+          const granted = await requestPermissions();
+          if (!granted) {
+            Alert.alert(
+              "Permission Required",
+              "Microphone permission is required to record audio.",
+              [{ text: "OK" }]
+            );
+            return;
+          }
+        }
+
+        // Double-check recording state before proceeding
+        if (isRecording) {
+          console.warn(
+            "Recording state changed during permission check, aborting"
           );
           return;
         }
-      }
 
-      try {
         const recordingOptions = {
           sampleRate,
           chunkSeconds,
@@ -121,9 +142,12 @@ export function useAudioRecorder(
           error instanceof Error ? error.message : String(error);
         options.onError?.(errorMessage);
         Alert.alert("Error", `Failed to start recording: ${errorMessage}`);
+      } finally {
+        isStartingRef.current = false;
       }
     },
     [
+      isRecording,
       hasPermissions,
       requestPermissions,
       options.onError,
@@ -204,7 +228,7 @@ export function useAudioRecorder(
     if (newAutoRecording) {
       options.onAutoRecordingStart?.();
       // Start recording immediately if auto-recording is enabled
-      if (!isRecording) {
+      if (!isRecording && !isStartingRef.current) {
         startRecording().catch(console.error);
       }
     } else {
@@ -256,17 +280,25 @@ export function useAudioRecorder(
       autoRecording &&
       hasPermissions &&
       !isRecording &&
+      !isStartingRef.current &&
       isNativeModuleAvailable
     ) {
-      startRecording().catch(console.error);
+      // Use a timeout to prevent immediate execution and potential race conditions
+      const timeoutId = setTimeout(() => {
+        if (
+          autoRecording &&
+          hasPermissions &&
+          !isRecording &&
+          !isStartingRef.current &&
+          isNativeModuleAvailable
+        ) {
+          startRecording().catch(console.error);
+        }
+      }, 100);
+
+      return () => clearTimeout(timeoutId);
     }
-  }, [
-    autoRecording,
-    hasPermissions,
-    isRecording,
-    startRecording,
-    isNativeModuleAvailable,
-  ]);
+  }, [autoRecording, hasPermissions, isRecording, isNativeModuleAvailable]);
 
   // Initial native module validation
   useEffect(() => {

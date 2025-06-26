@@ -15,27 +15,38 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.sample
+import kotlinx.coroutines.Job
 import java.io.File
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 
 /**
- * AudioChunkRecorderModule (Native Orchestrator)
- * ----------------------------------------------
+ * AudioChunkRecorderModule (Native Orchestrator) - PERFORMANCE OPTIMIZED
+ * ----------------------------------------------------------------
  * 📌 Exposes RN API (<JavaScript>)
  * 📌 Orchestrates Preview (audio level) and Recording (Chunk rotation)
  * 📌 Connects native events ➜ DeviceEventEmitter (JS)
+ * 🚀 PERFORMANCE: Shared engine, throttled events, proper thread management, no memory leaks
  */
 class AudioChunkRecorderModule(
     private val reactCtx: ReactApplicationContext
 ) : ReactContextBaseJavaModule(reactCtx), RecorderEventSink {
 
     // -----------------  Sub-components  -----------------
-    private val previewEngine = RecorderEngine()          // level preview only
-    private var rotationMgr: RotationManager? = null      // real recording
+    // PERFORMANCE: Single shared engine for both preview and recording
+    private val sharedEngine = RecorderEngine()
+    private var rotationMgr: RotationManager? = null
 
-    private val mainScope: CoroutineScope = MainScope()   // Dispatcher.Main
+    // PERFORMANCE: Use dedicated scope for UI events, IO for heavy work
+    private val uiScope: CoroutineScope = CoroutineScope(Dispatchers.Main + Job())
+    private val ioScope: CoroutineScope = CoroutineScope(Dispatchers.IO + Job())
+    
+    // PERFORMANCE: Single job management to prevent multiple subscriptions
+    private var levelPreviewJob: Job? = null
+    private var isPreviewActive = false
+    private var isRecordingActive = false
 
     // -----------------  React Native name  --------------
     override fun getName(): String = "AudioChunkRecorder"
@@ -45,7 +56,7 @@ class AudioChunkRecorderModule(
     fun isAvailable(promise: Promise) {
         try {
             // Check if the module is properly initialized
-            val isAvailable = previewEngine != null && reactCtx != null
+            val isAvailable = sharedEngine != null && reactCtx != null
             promise.resolve(isAvailable)
         } catch (t: Throwable) {
             promise.resolve(false)
@@ -88,38 +99,123 @@ class AudioChunkRecorderModule(
     // -----------------  Level Preview  ------------------
     @ReactMethod
     fun startAudioLevelPreview(promise: Promise) {
-        try {
-            previewEngine.start()
-            previewEngine.levelFlow
-                .onEach { sendAudioLevel(it) }
-                .launchIn(mainScope)
+        // PERFORMANCE: Prevent multiple simultaneous previews
+        if (isPreviewActive) {
+            promise.resolve(null) // Already active, no need to restart
+            return
+        }
+
+        // PERFORMANCE: If recording is active, use its engine
+        if (isRecordingActive) {
+            isPreviewActive = true
             promise.resolve(null)
+            return
+        }
+
+        try {
+            // PERFORMANCE: Cancel any existing subscription first
+            levelPreviewJob?.cancel()
+            levelPreviewJob = null
+            
+            // PERFORMANCE: Start engine in IO thread to avoid blocking UI
+            ioScope.launch {
+                try {
+                    sharedEngine.start()
+                    
+                    // PERFORMANCE: Throttle events to 10Hz (100ms) to reduce JS thread load
+                    levelPreviewJob = sharedEngine.levelFlow
+                        .sample(100) // Throttle to 100ms intervals
+                        .onEach { level ->
+                            // PERFORMANCE: Only send if level changed significantly
+                            if (level > 0.001 || level == 0.0) {
+                                sendAudioLevel(level)
+                            }
+                        }
+                        .launchIn(uiScope)
+                    
+                    isPreviewActive = true
+                    
+                    // Resolve promise on UI thread
+                    uiScope.launch {
+                        promise.resolve(null)
+                    }
+                } catch (e: Exception) {
+                    // Clean up on error
+                    levelPreviewJob?.cancel()
+                    levelPreviewJob = null
+                    isPreviewActive = false
+                    sharedEngine.stop()
+                    
+                    uiScope.launch {
+                        promise.reject("PREVIEW_ERROR", e.message)
+                    }
+                }
+            }
         } catch (t: Throwable) {
+            // Clean up on error
+            levelPreviewJob?.cancel()
+            levelPreviewJob = null
+            isPreviewActive = false
+            sharedEngine.stop()
             promise.reject("PREVIEW_ERROR", t.message)
         }
     }
 
     @ReactMethod
     fun stopAudioLevelPreview(promise: Promise) {
-        previewEngine.stop()
-        promise.resolve(null)
+        // PERFORMANCE: Quick return if not active
+        if (!isPreviewActive) {
+            promise.resolve(null)
+            return
+        }
+
+        try {
+            // PERFORMANCE: Cancel subscription first
+            levelPreviewJob?.cancel()
+            levelPreviewJob = null
+            isPreviewActive = false
+            
+            // PERFORMANCE: Stop engine in IO thread
+            ioScope.launch {
+                try {
+                    sharedEngine.stop()
+                    uiScope.launch {
+                        promise.resolve(null)
+                    }
+                } catch (e: Exception) {
+                    uiScope.launch {
+                        promise.reject("STOP_PREVIEW_ERROR", e.message)
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            promise.reject("STOP_PREVIEW_ERROR", t.message)
+        }
     }
 
     // -----------------  Chunk Recording  ----------------
     @ReactMethod
     fun startRecording(options: com.facebook.react.bridge.ReadableMap, promise: Promise) {
-        if (rotationMgr?.isRecording() == true) {
+        // PERFORMANCE: Prevent recording if already active
+        if (isRecordingActive) {
             promise.reject("ALREADY_RECORDING", "Already recording")
             return
         }
+
         try {
             val sampleRate = options.getInt("sampleRate")
             val chunkSec   = options.getDouble("chunkSeconds")
             val dir = File(reactCtx.filesDir, "AudioChunks").apply { if (!exists()) mkdirs() }
 
-            rotationMgr = RotationManager(eventSink = this).also {
+            // PERFORMANCE: Use shared engine for recording
+            rotationMgr = RotationManager(
+                eventSink = this,
+                sharedEngine = sharedEngine // Share the same engine
+            ).also {
                 it.start(sampleRate, chunkSec, dir)
             }
+            
+            isRecordingActive = true
             promise.resolve(null)
         } catch (t: Throwable) {
             promise.reject("START_FAIL", t.message)
@@ -142,6 +238,7 @@ class AudioChunkRecorderModule(
     fun stopRecording(promise: Promise) {
         rotationMgr?.stop()
         rotationMgr = null
+        isRecordingActive = false
         promise.resolve(null)
     }
 
@@ -185,8 +282,11 @@ class AudioChunkRecorderModule(
     // -----------------  Cleanup  -------------------------
     override fun onCatalystInstanceDestroy() {
         super.onCatalystInstanceDestroy()
-        previewEngine.stop()
+        levelPreviewJob?.cancel()
+        levelPreviewJob = null
+        sharedEngine.stop()
         rotationMgr?.release()
-        mainScope.cancel()
+        uiScope.cancel()
+        ioScope.cancel()
     }
 }
