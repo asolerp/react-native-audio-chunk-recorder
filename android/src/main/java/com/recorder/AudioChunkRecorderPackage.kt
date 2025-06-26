@@ -20,4 +20,8 @@ class AudioChunkRecorderPackage : ReactPackage {
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
         return emptyList()
     }
+    
+    companion object {
+        const val PACKAGE_NAME = "com.recorder.AudioChunkRecorderPackage"
+    }
 } 

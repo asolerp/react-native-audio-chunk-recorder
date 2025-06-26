@@ -63,7 +63,8 @@
   "react-native": {
     "android": {
       "sourceDir": "./android",
-      "packageImportPath": "import com.recorder.AudioChunkRecorderPackage;"
+      "packageImportPath": "import com.recorder.AudioChunkRecorderPackage;",
+      "packageName": "com.recorder.AudioChunkRecorderPackage"
     }
   },
   "files": [
