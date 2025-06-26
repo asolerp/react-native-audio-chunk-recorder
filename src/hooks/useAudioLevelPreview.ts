@@ -46,8 +46,8 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
   const handleAudioLevel = useCallback((levelData: { level: number }) => {
     const level = levelData.level;
 
-    // DEBUG: Log all incoming values
-    console.log("[AudioLevel] Raw level:", level);
+    // DEBUG: Log all incoming values with timestamp
+    console.log("[AudioLevel] Raw level:", level, "at", Date.now());
 
     // TRANSFORM: Make audio more reactive for UI (optional)
     // Apply logarithmic scaling to make small values more visible
@@ -62,8 +62,13 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
 
   // PERFORMANCE: Optimized start preview with proper error handling
   const startPreview = useCallback(async () => {
+    console.log("[AudioLevelPreview] startPreview called");
+
     // Prevent multiple simultaneous starts
     if (isStartingRef.current || isPreviewing) {
+      console.log(
+        "[AudioLevelPreview] Already starting or previewing, skipping"
+      );
       return;
     }
 
@@ -85,11 +90,13 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
 
       // PERFORMANCE: Remove existing listener before adding new one
       if (listenerRef.current) {
+        console.log("[AudioLevelPreview] Removing existing listener");
         listenerRef.current.remove();
         listenerRef.current = null;
       }
 
       // Add new listener
+      console.log("[AudioLevelPreview] Adding new listener");
       listenerRef.current = AudioChunkRecorderEventEmitter.addListener(
         "onAudioLevel",
         handleAudioLevel
@@ -97,6 +104,7 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
 
       await NativeAudioChunkRecorder.startAudioLevelPreview();
       setIsPreviewing(true);
+      console.log("[AudioLevelPreview] Preview started successfully");
     } catch (error) {
       console.error("Failed to start audio level preview:", error);
       Alert.alert("Error", `Failed to start audio level preview: ${error}`);
@@ -107,12 +115,15 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
 
   // PERFORMANCE: Optimized stop preview
   const stopPreview = useCallback(async () => {
+    console.log("[AudioLevelPreview] stopPreview called");
+
     try {
       await NativeAudioChunkRecorder.stopAudioLevelPreview();
       setIsPreviewing(false);
 
       // PERFORMANCE: Remove listener
       if (listenerRef.current) {
+        console.log("[AudioLevelPreview] Removing listener in stopPreview");
         listenerRef.current.remove();
         listenerRef.current = null;
       }
@@ -120,6 +131,7 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
       // Reset level when stopping
       setData({ level: 0, hasAudio: false });
       lastLevelRef.current = 0;
+      console.log("[AudioLevelPreview] Preview stopped successfully");
     } catch (error) {
       console.error("Failed to stop audio level preview:", error);
       Alert.alert("Error", `Failed to stop audio level preview: ${error}`);
@@ -128,11 +140,16 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
 
   // PERFORMANCE: Cleanup on unmount
   useEffect(() => {
+    console.log("[AudioLevelPreview] Component mounted");
+
     return () => {
+      console.log("[AudioLevelPreview] Component unmounting, cleaning up");
       if (listenerRef.current) {
+        console.log("[AudioLevelPreview] Removing listener in cleanup");
         listenerRef.current.remove();
       }
       if (isPreviewing) {
+        console.log("[AudioLevelPreview] Stopping preview in cleanup");
         stopPreview().catch(console.error);
       }
     };

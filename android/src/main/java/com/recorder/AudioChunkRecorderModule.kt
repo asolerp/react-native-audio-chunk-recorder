@@ -159,8 +159,11 @@ class AudioChunkRecorderModule(
 
     @ReactMethod
     fun stopAudioLevelPreview(promise: Promise) {
+        android.util.Log.d("AudioChunkRecorder", "stopAudioLevelPreview called. isPreviewActive: $isPreviewActive")
+        
         // PERFORMANCE: Quick return if not active
         if (!isPreviewActive) {
+            android.util.Log.d("AudioChunkRecorder", "Preview not active, resolving immediately")
             promise.resolve(null)
             return
         }
@@ -171,20 +174,25 @@ class AudioChunkRecorderModule(
             levelPreviewJob = null
             isPreviewActive = false
             
+            android.util.Log.d("AudioChunkRecorder", "Stopping shared engine")
+            
             // PERFORMANCE: Stop engine in IO thread
             ioScope.launch {
                 try {
                     sharedEngine.stop()
+                    android.util.Log.d("AudioChunkRecorder", "Shared engine stopped successfully")
                     uiScope.launch {
                         promise.resolve(null)
                     }
                 } catch (e: Exception) {
+                    android.util.Log.e("AudioChunkRecorder", "Error stopping engine: ${e.message}")
                     uiScope.launch {
                         promise.reject("STOP_PREVIEW_ERROR", e.message)
                     }
                 }
             }
         } catch (t: Throwable) {
+            android.util.Log.e("AudioChunkRecorder", "Error in stopAudioLevelPreview: ${t.message}")
             promise.reject("STOP_PREVIEW_ERROR", t.message)
         }
     }

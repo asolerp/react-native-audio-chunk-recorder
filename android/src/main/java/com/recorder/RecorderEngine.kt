@@ -86,6 +86,8 @@ class RecorderEngine(
                 var consecutiveErrors = 0
                 val maxErrors = 5
                 
+                android.util.Log.d("RecorderEngine", "Audio processing loop started")
+                
                 while (isActive && recording.get()) {
                     try {
                         val read = audioRecord?.read(scratch, 0, scratch.size, AudioRecord.READ_BLOCKING) ?: 0
@@ -100,6 +102,11 @@ class RecorderEngine(
                             
                             // PERFORMANCE: Compute RMS in same thread to avoid context switching
                             computeRmsOptimized(scratch, read)
+                            
+                            // DEBUG: Log successful audio read
+                            android.util.Log.d("RecorderEngine", "Audio read successful: $read samples")
+                        } else {
+                            android.util.Log.w("RecorderEngine", "Audio read returned 0 or negative: $read")
                         }
                     } catch (e: Exception) {
                         consecutiveErrors++
@@ -114,6 +121,8 @@ class RecorderEngine(
                         kotlinx.coroutines.delay(10)
                     }
                 }
+                
+                android.util.Log.d("RecorderEngine", "Audio processing loop ended. isActive: ${isActive}, recording: ${recording.get()}")
             }
         } catch (e: Exception) {
             // Clean up on error
@@ -130,7 +139,14 @@ class RecorderEngine(
     fun resume() { if (recording.get()) audioRecord?.startRecording() }
 
     fun stop() {
-        if (!recording.getAndSet(false)) return
+        android.util.Log.d("RecorderEngine", "stop() called. Current recording state: ${recording.get()}")
+        
+        if (!recording.getAndSet(false)) {
+            android.util.Log.d("RecorderEngine", "stop() called but already stopped")
+            return
+        }
+        
+        android.util.Log.d("RecorderEngine", "Stopping audio capture and cleaning up resources")
         
         // PERFORMANCE: Clean up resources efficiently
         audioRecord?.run {
@@ -145,6 +161,8 @@ class RecorderEngine(
         
         // PERFORMANCE: Cancel scope
         audioScope.cancel()
+        
+        android.util.Log.d("RecorderEngine", "stop() completed")
     }
 
     // ------------------------------------------------------------------------
@@ -156,8 +174,14 @@ class RecorderEngine(
             val sample = buf[i].toDouble()
             sum += sample * sample
         }
-        val rms = kotlin.math.sqrt(sum / len) / 32768.0
+        val rmsRaw = kotlin.math.sqrt(sum / len)
+        val rms = rmsRaw / 32768.0
         lastAudioLevel = rms.coerceAtMost(1.0)
+        
+        // DEBUG: Log detailed RMS calculation for debugging high values
+        if (rms > 1.0) {
+            android.util.Log.w("RecorderEngine", "High RMS detected: raw=$rmsRaw, normalized=$rms, clamped=${lastAudioLevel}")
+        }
         
         // DEBUG: Log computed audio level
         android.util.Log.d("RecorderEngine", "Computed RMS level: $lastAudioLevel")
