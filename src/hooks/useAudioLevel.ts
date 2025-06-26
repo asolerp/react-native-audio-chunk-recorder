@@ -14,6 +14,8 @@ export interface UseAudioLevelOptions {
   audioThreshold?: number;
   /** Throttle audio level updates in milliseconds (default: 100) */
   throttleMs?: number;
+  /** Disable throttling completely for debugging (default: false) */
+  disableThrottling?: boolean;
   /** Transform function to modify audio level values */
   transformLevel?: (level: number) => number;
   /** Callback when audio level changes */
@@ -53,6 +55,7 @@ export function useAudioLevel(
   const {
     audioThreshold = 0.001,
     throttleMs = 100,
+    disableThrottling = false,
     transformLevel,
     onLevelChange,
     onAudioDetected,
@@ -77,9 +80,25 @@ export function useAudioLevel(
   const handleAudioLevel = useCallback(
     (levelData: { level: number }) => {
       const now = Date.now();
-      if (now - lastUpdateRef.current < throttleMs) {
+      const timeSinceLastUpdate = now - lastUpdateRef.current;
+
+      // Debug logging
+      console.log(
+        `[useAudioLevel] Received audio level: ${levelData.level.toFixed(
+          6
+        )}, time since last: ${timeSinceLastUpdate}ms, throttle: ${throttleMs}ms, disabled: ${disableThrottling}`
+      );
+
+      if (!disableThrottling && timeSinceLastUpdate < throttleMs) {
+        console.log(
+          `[useAudioLevel] ⏱️ Throttled update (${timeSinceLastUpdate}ms < ${throttleMs}ms)`
+        );
         return; // Throttle updates
       }
+
+      console.log(
+        `[useAudioLevel] ✅ Processing update after ${timeSinceLastUpdate}ms`
+      );
       lastUpdateRef.current = now;
 
       const rawLevel = levelData.level;
@@ -110,6 +129,7 @@ export function useAudioLevel(
     [
       audioThreshold,
       throttleMs,
+      disableThrottling,
       transformLevel,
       onLevelChange,
       onAudioDetected,
