@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { NativeEventEmitter, NativeModules } from "react-native";
-
-const { AudioChunkRecorderModule } = NativeModules;
+import { AudioChunkRecorderEventEmitter } from "../NativeAudioChunkRecorder";
 
 export interface AudioChunk {
   path: string;
@@ -44,9 +42,7 @@ export function useAudioChunks(
 
   // Listen for chunk ready events from native module
   useEffect(() => {
-    const emitter = new NativeEventEmitter(AudioChunkRecorderModule);
-
-    const chunkSub = emitter.addListener(
+    const chunkSub = AudioChunkRecorderEventEmitter.addListener(
       "onChunkReady",
       (chunkData: { path: string; seq: number }) => {
         const newChunk: AudioChunk = {

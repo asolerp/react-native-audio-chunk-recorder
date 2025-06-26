@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { NativeModules, NativeEventEmitter, Alert } from "react-native";
+import { Alert } from "react-native";
 import { useAudioPermissions } from "./useAudioPermissions";
 import {
   isNativeModuleAvailableSync,
   isNativeModuleAvailableAsync,
 } from "../utils/nativeModuleUtils";
-
-const { AudioChunkRecorderModule } = NativeModules;
+import {
+  NativeAudioChunkRecorder,
+  AudioChunkRecorderEventEmitter,
+} from "../NativeAudioChunkRecorder";
 
 export interface UseAudioRecorderResult {
   isRecording: boolean;
@@ -113,7 +115,7 @@ export function useAudioRecorder(
           sampleRate,
           chunkSeconds,
         };
-        await AudioChunkRecorderModule.startRecording(recordingOptions);
+        await NativeAudioChunkRecorder.startRecording(recordingOptions);
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
@@ -140,7 +142,7 @@ export function useAudioRecorder(
     }
 
     try {
-      await AudioChunkRecorderModule.stopRecording();
+      await NativeAudioChunkRecorder.stopRecording();
       // If auto-recording is enabled, stop it when manually stopped
       if (autoRecording) {
         setAutoRecording(false);
@@ -168,7 +170,7 @@ export function useAudioRecorder(
     }
 
     try {
-      await AudioChunkRecorderModule.pauseRecording();
+      await NativeAudioChunkRecorder.pauseRecording();
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -186,7 +188,7 @@ export function useAudioRecorder(
     }
 
     try {
-      await AudioChunkRecorderModule.resumeRecording();
+      await NativeAudioChunkRecorder.resumeRecording();
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -225,9 +227,7 @@ export function useAudioRecorder(
   useEffect(() => {
     if (!isNativeModuleAvailable) return;
 
-    const emitter = new NativeEventEmitter(AudioChunkRecorderModule);
-
-    const stateSub = emitter.addListener(
+    const stateSub = AudioChunkRecorderEventEmitter.addListener(
       "onStateChange",
       (state: { isRecording: boolean; isPaused: boolean }) => {
         setIsRecording(state.isRecording);
@@ -236,7 +236,7 @@ export function useAudioRecorder(
       }
     );
 
-    const errorSub = emitter.addListener(
+    const errorSub = AudioChunkRecorderEventEmitter.addListener(
       "onError",
       (error: { message: string }) => {
         console.error("AudioRecorder error:", error.message);

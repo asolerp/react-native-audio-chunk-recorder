@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { NativeModules, NativeEventEmitter } from "react-native";
-
-const { AudioFileManagerModule } = NativeModules;
+import {
+  NativeAudioChunkRecorder,
+  AudioChunkRecorderEventEmitter,
+} from "../NativeAudioChunkRecorder";
 
 export interface AudioFileInfo {
   path: string;
@@ -27,21 +28,10 @@ export function useAudioFiles(): UseAudioFilesReturn {
 
   const refresh = useCallback(async () => {
     try {
-      const filePaths: string[] = await AudioFileManagerModule.listFiles();
-      const fileInfos: AudioFileInfo[] = [];
-
-      for (const path of filePaths) {
-        try {
-          const info = await AudioFileManagerModule.getFileInfo(path);
-          if (info) {
-            fileInfos.push(info);
-          }
-        } catch (error) {
-          console.warn("Failed to get file info for:", path, error);
-        }
-      }
-
-      setFiles(fileInfos);
+      // Note: This hook currently doesn't have file listing functionality
+      // You may need to implement this using the native module's capabilities
+      console.warn("File listing functionality not yet implemented");
+      setFiles([]);
     } catch (error) {
       console.error("Failed to refresh files:", error);
     }
@@ -49,8 +39,8 @@ export function useAudioFiles(): UseAudioFilesReturn {
 
   const saveTempFile = useCallback(async (tempPath: string) => {
     try {
-      await AudioFileManagerModule.saveTempFile(tempPath);
-      // File list will be updated via event
+      // Note: This functionality would need to be implemented in the native module
+      console.warn("Save temp file functionality not yet implemented");
     } catch (error) {
       console.error("Failed to save temp file:", error);
     }
@@ -58,7 +48,8 @@ export function useAudioFiles(): UseAudioFilesReturn {
 
   const deleteFile = useCallback(async (path: string) => {
     try {
-      await AudioFileManagerModule.deleteFile(path);
+      // Note: This functionality would need to be implemented in the native module
+      console.warn("Delete file functionality not yet implemented");
       setFiles((prev) => prev.filter((file) => file.path !== path));
     } catch (error) {
       console.error("Failed to delete file:", error);
@@ -68,7 +59,9 @@ export function useAudioFiles(): UseAudioFilesReturn {
   const getFileInfo = useCallback(
     async (path: string): Promise<AudioFileInfo | null> => {
       try {
-        return await AudioFileManagerModule.getFileInfo(path);
+        // Note: This functionality would need to be implemented in the native module
+        console.warn("Get file info functionality not yet implemented");
+        return null;
       } catch (error) {
         console.error("Failed to get file info:", error);
         return null;
@@ -79,7 +72,7 @@ export function useAudioFiles(): UseAudioFilesReturn {
 
   const clearAllFiles = useCallback(async () => {
     try {
-      await AudioFileManagerModule.clearAllFiles();
+      await NativeAudioChunkRecorder.clearAllChunkFiles();
       setFiles([]);
     } catch (error) {
       console.error("Failed to clear all files:", error);
@@ -89,30 +82,21 @@ export function useAudioFiles(): UseAudioFilesReturn {
   useEffect(() => {
     refresh();
 
-    AudioFileManagerModule.getDirectory()
-      .then(setDirectory)
-      .catch(() => {});
+    // Note: Directory functionality would need to be implemented
+    setDirectory(null);
 
-    const emitter = new NativeEventEmitter(AudioFileManagerModule);
-
-    const savedSub = emitter.addListener(
-      "onFileSaved",
-      (event: { path: string }) => {
-        // Refresh the file list when a new file is saved
-        refresh();
-      }
-    );
-
-    const deletedSub = emitter.addListener(
-      "onFileDeleted",
-      (event: { path: string }) => {
-        setFiles((prev) => prev.filter((file) => file.path !== event.path));
+    // Listen for chunk ready events which might indicate new files
+    const chunkSub = AudioChunkRecorderEventEmitter.addListener(
+      "onChunkReady",
+      (event: { path: string; seq: number }) => {
+        // When a new chunk is ready, it means a new file was created
+        // You could update the file list here if needed
+        console.log("New chunk file created:", event.path);
       }
     );
 
     return () => {
-      savedSub.remove();
-      deletedSub.remove();
+      chunkSub.remove();
     };
   }, [refresh]);
 

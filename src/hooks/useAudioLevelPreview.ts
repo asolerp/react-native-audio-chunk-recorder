@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { NativeModules, NativeEventEmitter, Alert } from "react-native";
+import { Alert } from "react-native";
 import { useAudioPermissions } from "./useAudioPermissions";
-
-const { AudioChunkRecorderModule } = NativeModules;
+import {
+  NativeAudioChunkRecorder,
+  AudioChunkRecorderEventEmitter,
+} from "../NativeAudioChunkRecorder";
 
 export interface AudioLevelData {
   level: number;
@@ -43,7 +45,7 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
     }
 
     try {
-      await AudioChunkRecorderModule.startAudioLevelPreview();
+      await NativeAudioChunkRecorder.startAudioLevelPreview();
       setIsPreviewing(true);
     } catch (error) {
       Alert.alert("Error", `Failed to start audio level preview: ${error}`);
@@ -52,7 +54,7 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
 
   const stopPreview = useCallback(async () => {
     try {
-      await AudioChunkRecorderModule.stopAudioLevelPreview();
+      await NativeAudioChunkRecorder.stopAudioLevelPreview();
       setIsPreviewing(false);
       // Reset level when stopping
       setData({ level: 0, hasAudio: false });
@@ -62,9 +64,7 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
   }, []);
 
   useEffect(() => {
-    const emitter = new NativeEventEmitter(AudioChunkRecorderModule);
-
-    const audioLevelSub = emitter.addListener(
+    const audioLevelSub = AudioChunkRecorderEventEmitter.addListener(
       "onAudioLevel",
       (levelData: { level: number }) => {
         setData({
