@@ -223,6 +223,28 @@ RCT_EXPORT_METHOD(isAvailable:(RCTPromiseResolveBlock)resolve
     resolve(@(YES));
 }
 
+// Check if recording is currently active
+RCT_EXPORT_METHOD(isRecording:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    resolve(@(self.isRecording));
+}
+
+// Get current AudioRecord state for debugging
+RCT_EXPORT_METHOD(getAudioRecordState:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    NSDictionary *state = @{
+        @"isRecording": @(self.isRecording),
+        @"isPaused": @(self.isPaused),
+        @"seq": @(self.seq),
+        @"sampleRate": @(self.sampleRate),
+        @"chunkSeconds": @(self.chunkSeconds),
+        @"currentFilePath": self.currentFilePath ?: @"",
+        @"accumulatedRecordingTime": @(self.accumulatedRecordingTime),
+        @"interruptionEventSent": @(self.interruptionEventSent)
+    };
+    resolve(state);
+}
+
 // Clears all recorded chunk files from the Documents directory
 RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject) {
