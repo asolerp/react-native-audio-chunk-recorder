@@ -18,7 +18,7 @@ import {
   useNativeModuleAvailability,
   isNativeModuleAvailableSync,
   isNativeModuleAvailableAsync,
-  hasAudioPermissions,
+  checkNativeAudioPermissions,
   getNativeModuleInfo,
   validateNativeModule,
   AudioChunk,
@@ -293,7 +293,7 @@ export default function CompleteExample() {
 
   const handleCheckPermissions = async () => {
     try {
-      const hasPerms = await hasAudioPermissions();
+      const hasPerms = await checkNativeAudioPermissions();
       Alert.alert("Permissions Check", `Has permissions: ${hasPerms}`, [
         { text: "OK" },
       ]);

@@ -55,7 +55,7 @@ export type {
 export {
   isNativeModuleAvailableSync,
   isNativeModuleAvailableAsync,
-  hasAudioPermissions,
+  checkNativeAudioPermissions,
   getNativeModuleInfo,
   validateNativeModule,
 } from "./utils/nativeModuleUtils";

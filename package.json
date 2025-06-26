@@ -1,6 +1,6 @@
 {
   "name": "@asolerp/react-native-audio-chunk-recorder",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "React Native audio recording with chunking support",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -12,7 +12,9 @@
     "test:coverage": "jest --coverage",
     "install-local": "node install-local.js",
     "setup-project": "node setup-project.js",
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "verify": "node scripts/verify-installation.js",
+    "test-module": "node scripts/test-module.js"
   },
   "keywords": [
     "react-native",

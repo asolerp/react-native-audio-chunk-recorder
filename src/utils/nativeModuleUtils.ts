@@ -115,7 +115,7 @@ export async function isNativeModuleAvailableAsync(): Promise<QuickAvailabilityC
 /**
  * Check if the module has audio recording permissions
  */
-export async function hasAudioPermissions(): Promise<boolean> {
+export async function checkNativeAudioPermissions(): Promise<boolean> {
   try {
     const syncCheck = isNativeModuleAvailableSync();
     if (!syncCheck.isAvailable) {
