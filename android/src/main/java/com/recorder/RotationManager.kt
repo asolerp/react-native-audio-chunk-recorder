@@ -86,7 +86,6 @@ class RotationManager(
             
             // PERFORMANCE: Optimized PCM collection with buffering
             collectorJob = engine!!.pcmFlow
-                .buffer(4) // Prevent backpressure
                 .onEach { samples ->
                     encoder?.writeSamples(samples)
                 }

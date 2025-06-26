@@ -43,7 +43,7 @@ class RecorderEngine(
         extraBufferCapacity = 16, // Increased buffer for better performance
         replay = 0
     )
-    val pcmFlow: SharedFlow<ShortArray> = _pcmFlow.buffer(8) // Buffer to prevent backpressure
+    val pcmFlow: SharedFlow<ShortArray> = _pcmFlow
 
     private val _levelFlow = MutableStateFlow(0.0)
     val levelFlow: StateFlow<Double> = _levelFlow
