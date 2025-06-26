@@ -15,6 +15,12 @@ import {
   useAudioRecorder,
   useAudioLevelPreview,
   useAudioChunks,
+  useNativeModuleAvailability,
+  isNativeModuleAvailableSync,
+  isNativeModuleAvailableAsync,
+  hasAudioPermissions,
+  getNativeModuleInfo,
+  validateNativeModule,
   AudioChunk,
 } from "../src";
 
@@ -35,6 +41,10 @@ export default function CompleteExample() {
     autoRecording,
     setAutoRecording,
     toggleAutoRecording,
+    // Native module availability
+    isNativeModuleAvailable,
+    checkNativeModuleAvailability,
+    nativeModuleError,
   } = useAudioRecorder({
     autoRecording: false, // Start with auto-recording disabled
     onAutoRecordingStart: () => {
@@ -59,6 +69,14 @@ export default function CompleteExample() {
       console.log("🔄 Recording state changed:", state);
     },
   });
+
+  // ===== NATIVE MODULE AVAILABILITY HOOK =====
+  const {
+    status: nativeModuleStatus,
+    checkAvailability,
+    refreshStatus,
+    isLoading: isCheckingAvailability,
+  } = useNativeModuleAvailability();
 
   // ===== AUDIO LEVEL PREVIEW HOOK =====
   const {
@@ -246,6 +264,70 @@ export default function CompleteExample() {
     }
   };
 
+  // ===== NATIVE MODULE UTILITY HANDLERS =====
+  const handleSyncCheck = () => {
+    const result = isNativeModuleAvailableSync();
+    Alert.alert(
+      "Sync Check Result",
+      `Available: ${result.isAvailable}\nPlatform: ${result.platform}\n${
+        result.error ? `Error: ${result.error}` : ""
+      }`,
+      [{ text: "OK" }]
+    );
+  };
+
+  const handleAsyncCheck = async () => {
+    try {
+      const result = await isNativeModuleAvailableAsync();
+      Alert.alert(
+        "Async Check Result",
+        `Available: ${result.isAvailable}\nPlatform: ${result.platform}\n${
+          result.error ? `Error: ${result.error}` : ""
+        }`,
+        [{ text: "OK" }]
+      );
+    } catch (error) {
+      Alert.alert("Error", `Async check failed: ${error}`);
+    }
+  };
+
+  const handleCheckPermissions = async () => {
+    try {
+      const hasPerms = await hasAudioPermissions();
+      Alert.alert("Permissions Check", `Has permissions: ${hasPerms}`, [
+        { text: "OK" },
+      ]);
+    } catch (error) {
+      Alert.alert("Error", `Permission check failed: ${error}`);
+    }
+  };
+
+  const handleGetModuleInfo = () => {
+    try {
+      const info = getNativeModuleInfo();
+      Alert.alert(
+        "Module Info",
+        `Platform: ${info.platform}\nModule exists: ${
+          info.moduleExists
+        }\nVersion: ${
+          info.moduleVersion
+        }\nMethods: ${info.availableMethods.join(", ")}`,
+        [{ text: "OK" }]
+      );
+    } catch (error) {
+      Alert.alert("Error", `Failed to get module info: ${error}`);
+    }
+  };
+
+  const handleValidateModule = () => {
+    try {
+      validateNativeModule();
+      Alert.alert("Validation", "✅ Native module is valid!", [{ text: "OK" }]);
+    } catch (error) {
+      Alert.alert("Validation Failed", `❌ ${error}`, [{ text: "OK" }]);
+    }
+  };
+
   // ===== UTILITY FUNCTIONS =====
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
@@ -296,8 +378,91 @@ export default function CompleteExample() {
       <Text style={styles.title}>Complete Audio Recorder Example</Text>
       <Text style={styles.subtitle}>
         All hooks working together: Recording + Auto-Recording + Level Preview +
-        Chunk Management
+        Chunk Management + Native Module Validation
       </Text>
+
+      {/* Native Module Availability Section */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>🔧 Native Module Availability</Text>
+        <Text style={styles.description}>
+          Check if the native module is properly installed and available
+        </Text>
+
+        <View style={styles.statusRow}>
+          <Text style={styles.label}>
+            Status:{" "}
+            {nativeModuleStatus.isAvailable
+              ? "✅ Available"
+              : "❌ Not Available"}
+          </Text>
+          {isCheckingAvailability && (
+            <Text style={styles.loadingText}>Checking...</Text>
+          )}
+        </View>
+
+        {nativeModuleStatus.error && (
+          <Text style={styles.errorText}>
+            Error: {nativeModuleStatus.error}
+          </Text>
+        )}
+
+        <View style={styles.detailsGrid}>
+          <View style={styles.detailItem}>
+            <Text style={styles.detailLabel}>Platform</Text>
+            <Text style={styles.detailValue}>
+              {nativeModuleStatus.platform}
+            </Text>
+          </View>
+          <View style={styles.detailItem}>
+            <Text style={styles.detailLabel}>Initialized</Text>
+            <Text style={styles.detailValue}>
+              {nativeModuleStatus.isInitialized ? "✅" : "❌"}
+            </Text>
+          </View>
+          <View style={styles.detailItem}>
+            <Text style={styles.detailLabel}>Permissions</Text>
+            <Text style={styles.detailValue}>
+              {nativeModuleStatus.hasPermissions ? "✅" : "❌"}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.buttonRow}>
+          <Button
+            title="Refresh Status"
+            color="#2196F3"
+            onPress={refreshStatus}
+          />
+          <Button
+            title="Sync Check"
+            color="#4CAF50"
+            onPress={handleSyncCheck}
+          />
+          <Button
+            title="Async Check"
+            color="#FF9800"
+            onPress={handleAsyncCheck}
+          />
+        </View>
+
+        <View style={styles.buttonRow}>
+          <Button
+            title="Check Permissions"
+            color="#9C27B0"
+            onPress={handleCheckPermissions}
+          />
+          <Button
+            title="Module Info"
+            color="#607D8B"
+            onPress={handleGetModuleInfo}
+          />
+          <Button
+            title="Validate Module"
+            color="#E91E63"
+            onPress={handleValidateModule}
+          />
+        </View>
+      </View>
 
       {/* Permissions Section */}
       <View style={styles.section}>
@@ -522,13 +687,16 @@ export default function CompleteExample() {
           level monitoring{"\n"}
           <Text style={styles.bold}>useAudioChunks:</Text> Chunk management with
           callbacks{"\n"}
+          <Text style={styles.bold}>useNativeModuleAvailability:</Text> Native
+          module availability checking and validation{"\n"}
           {"\n"}
           <Text style={styles.bold}>Features:</Text>
-          {"\n"}• Auto-recording with smart state management{"\n"}• Audio level
-          preview without recording{"\n"}• Recording with pause/resume{"\n"}•
-          Automatic chunk creation every 30 seconds{"\n"}• External chunk
-          processing with callbacks{"\n"}• Chunk statistics and management{"\n"}
-          • TypeScript support throughout{"\n"}• Error handling and callbacks
+          {"\n"}• Native module availability validation{"\n"}• Auto-recording
+          with smart state management{"\n"}• Audio level preview without
+          recording{"\n"}• Recording with pause/resume{"\n"}• Automatic chunk
+          creation every 30 seconds{"\n"}• External chunk processing with
+          callbacks{"\n"}• Chunk statistics and management{"\n"}• TypeScript
+          support throughout{"\n"}• Error handling and callbacks
         </Text>
       </View>
     </ScrollView>
@@ -701,5 +869,37 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     marginBottom: 10,
+  },
+  statusRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  loadingText: {
+    fontSize: 12,
+    color: "#666",
+  },
+  errorText: {
+    fontSize: 12,
+    color: "#F44336",
+    marginTop: 10,
+  },
+  detailsGrid: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    marginBottom: 10,
+  },
+  detailItem: {
+    alignItems: "center",
+    padding: 10,
+  },
+  detailLabel: {
+    fontSize: 12,
+    color: "#666",
+  },
+  detailValue: {
+    fontSize: 16,
+    fontWeight: "bold",
   },
 });

@@ -3,9 +3,6 @@
  * Main entry point for the NPM module
  */
 
-// Main hook
-export { useAudioRecorderCore } from "./hooks/useAudioRecorderCore";
-
 // Native module interface
 export {
   NativeAudioChunkRecorder,
@@ -41,10 +38,25 @@ export { createSimpleStateManager } from "./providers/simpleStateManager";
 // Adapters
 export { createJotaiStateManager } from "./adapters/jotaiAdapter";
 
-// New Kotlin modular hooks
+// Main hooks
 export { useAudioLevelPreview } from "./hooks/useAudioLevelPreview";
 export { useAudioRecorder } from "./hooks/useAudioRecorder";
 export { useAudioChunks } from "./hooks/useAudioChunks";
 export { useAudioPermissions } from "./hooks/useAudioPermissions";
+export { useNativeModuleAvailability } from "./hooks/useNativeModuleAvailability";
 export type { AudioChunk } from "./hooks/useAudioChunks";
 export type { PermissionStatus } from "./hooks/useAudioPermissions";
+export type {
+  NativeModuleStatus,
+  UseNativeModuleAvailabilityResult,
+} from "./hooks/useNativeModuleAvailability";
+
+// Native module utilities
+export {
+  isNativeModuleAvailableSync,
+  isNativeModuleAvailableAsync,
+  hasAudioPermissions,
+  getNativeModuleInfo,
+  validateNativeModule,
+} from "./utils/nativeModuleUtils";
+export type { QuickAvailabilityCheck } from "./utils/nativeModuleUtils";
