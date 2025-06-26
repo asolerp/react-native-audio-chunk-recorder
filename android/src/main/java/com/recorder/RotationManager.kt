@@ -69,16 +69,21 @@ class RotationManager(
         try {
             // PERFORMANCE: Use shared engine if available, otherwise create new one
             engine = if (sharedEngine != null) {
+                android.util.Log.d("RotationManager", "Using shared engine")
                 ownsEngine = false
                 sharedEngine
             } else {
+                android.util.Log.d("RotationManager", "Creating new engine")
                 ownsEngine = true
                 RecorderEngine(sampleRate).apply { start() }
             }
             
             // PERFORMANCE: Start engine only if we own it
             if (ownsEngine) {
+                android.util.Log.d("RotationManager", "Starting owned engine")
                 engine?.start()
+            } else {
+                android.util.Log.d("RotationManager", "Using existing shared engine")
             }
             
             // 2) Encoder for first chunk
@@ -91,19 +96,23 @@ class RotationManager(
                 }
                 .launchIn(scope)
                 
-            // PERFORMANCE: Audio level monitoring
-            levelJob = engine!!.levelFlow
-                .onEach { level ->
-                    eventSink.onAudioLevel(level)
-                }
-                .launchIn(scope)
+            // PERFORMANCE: Audio level monitoring (only if we own the engine)
+            if (ownsEngine) {
+                levelJob = engine!!.levelFlow
+                    .onEach { level ->
+                        eventSink.onAudioLevel(level)
+                    }
+                    .launchIn(scope)
+            }
             
             // 4) Launch rotation ticker
             startTicker()
             isRecording.set(true)
             isPaused.set(false)
             eventSink.onStateChange(true, false)
+            android.util.Log.d("RotationManager", "Recording started successfully")
         } catch (t: Throwable) {
+            android.util.Log.e("RotationManager", "Error starting recording: ${t.message}")
             eventSink.onError(t.message ?: "unknown error")
             stop() // rollback
         }

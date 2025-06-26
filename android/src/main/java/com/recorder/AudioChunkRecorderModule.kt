@@ -36,9 +36,8 @@ class AudioChunkRecorderModule(
 ) : ReactContextBaseJavaModule(reactCtx), RecorderEventSink {
 
     // -----------------  Sub-components  -----------------
-    // PERFORMANCE: Single shared engine for both preview and recording
-    private val sharedEngine = RecorderEngine()
-    private var rotationMgr: RotationManager? = null
+    private val sharedEngine = RecorderEngine()          // Single shared engine for both preview and recording
+    private var rotationMgr: RotationManager? = null      // real recording
 
     // PERFORMANCE: Use dedicated scope for UI events, IO for heavy work
     private val uiScope: CoroutineScope = CoroutineScope(Dispatchers.Main + Job())
@@ -102,14 +101,8 @@ class AudioChunkRecorderModule(
     fun startAudioLevelPreview(promise: Promise) {
         // PERFORMANCE: Prevent multiple simultaneous previews
         if (isPreviewActive) {
+            android.util.Log.d("AudioChunkRecorder", "Preview already active, skipping")
             promise.resolve(null) // Already active, no need to restart
-            return
-        }
-
-        // PERFORMANCE: If recording is active, use its engine
-        if (isRecordingActive) {
-            isPreviewActive = true
-            promise.resolve(null)
             return
         }
 
@@ -121,25 +114,27 @@ class AudioChunkRecorderModule(
             // PERFORMANCE: Start engine in IO thread to avoid blocking UI
             ioScope.launch {
                 try {
+                    android.util.Log.d("AudioChunkRecorder", "Starting shared engine for preview")
                     sharedEngine.start()
                     
-                    // NO THROTTLING: Send all audio levels immediately
+                    // PERFORMANCE: Send all audio levels without throttling for debugging
                     levelPreviewJob = sharedEngine.levelFlow
                         .onEach { level ->
                             // DEBUG: Log all levels being sent
                             android.util.Log.d("AudioChunkRecorder", "Sending audio level: $level")
-                            // Send all levels without any filtering
                             sendAudioLevel(level)
                         }
                         .launchIn(uiScope)
                     
                     isPreviewActive = true
+                    android.util.Log.d("AudioChunkRecorder", "Preview started successfully")
                     
                     // Resolve promise on UI thread
                     uiScope.launch {
                         promise.resolve(null)
                     }
                 } catch (e: Exception) {
+                    android.util.Log.e("AudioChunkRecorder", "Error starting preview: ${e.message}")
                     // Clean up on error
                     levelPreviewJob?.cancel()
                     levelPreviewJob = null
@@ -152,6 +147,7 @@ class AudioChunkRecorderModule(
                 }
             }
         } catch (t: Throwable) {
+            android.util.Log.e("AudioChunkRecorder", "Error in startAudioLevelPreview: ${t.message}")
             // Clean up on error
             levelPreviewJob?.cancel()
             levelPreviewJob = null
@@ -216,8 +212,10 @@ class AudioChunkRecorderModule(
             }
             
             isRecordingActive = true
+            android.util.Log.d("AudioChunkRecorder", "Recording started successfully")
             promise.resolve(null)
         } catch (t: Throwable) {
+            android.util.Log.e("AudioChunkRecorder", "Error starting recording: ${t.message}")
             promise.reject("START_FAIL", t.message)
         }
     }

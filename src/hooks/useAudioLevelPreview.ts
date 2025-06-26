@@ -49,9 +49,13 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
     // DEBUG: Log all incoming values
     console.log("[AudioLevel] Raw level:", level);
 
+    // TRANSFORM: Make audio more reactive for UI (optional)
+    // Apply logarithmic scaling to make small values more visible
+    const transformedLevel = level > 0 ? Math.pow(level, 0.3) : 0;
+
     // NO THROTTLING: Update immediately for all values
     setData({
-      level,
+      level: transformedLevel,
       hasAudio: level > 0,
     });
   }, []);
