@@ -1,18 +1,18 @@
-import { NativeEventEmitter, NativeModules } from 'react-native';
+import { NativeEventEmitter, NativeModules } from "react-native";
 import type {
   RecordingOptions,
   ChunkData,
   ErrorData,
   StateChangeData,
   AudioLevelData,
-  InterruptionData
-} from './types';
+  InterruptionData,
+} from "./types";
 
 const { AudioChunkRecorder } = NativeModules;
 
 if (!AudioChunkRecorder) {
   throw new Error(
-    'AudioChunkRecorder native module is not available. Make sure you have properly installed and linked the react-native-audio-chunk-recorder package.'
+    "AudioChunkRecorder native module is not available. Make sure you have properly installed and linked the react-native-audio-chunk-recorder package."
   );
 }
 
@@ -22,6 +22,10 @@ export interface NativeAudioChunkRecorderInterface {
   stopRecording(): Promise<string>;
   pauseRecording(): Promise<string>;
   resumeRecording(): Promise<string>;
+
+  // Audio level preview methods
+  startAudioLevelPreview(): Promise<void>;
+  stopAudioLevelPreview(): Promise<void>;
 
   // Permission and availability methods
   checkPermissions(): Promise<boolean>;
