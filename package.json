@@ -14,7 +14,8 @@
     "setup-project": "node setup-project.js",
     "postinstall": "node scripts/postinstall.js",
     "verify": "node scripts/verify-installation.js",
-    "test-module": "node scripts/test-module.js"
+    "test-module": "node scripts/test-module.js",
+    "verify-android": "node scripts/verify-android-linking.js"
   },
   "keywords": [
     "react-native",
