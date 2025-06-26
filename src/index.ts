@@ -6,21 +6,9 @@
 // Main hooks
 export { useAudioRecorderCore } from "./hooks/useAudioRecorderCore";
 export { useAudioLevel } from "./hooks/useAudioLevel";
-export type {
-  UseAudioLevelOptions,
-  UseAudioLevelReturn,
-} from "./hooks/useAudioLevel";
-
-// Native module interface
-export {
-  NativeAudioChunkRecorder,
-  AudioChunkRecorderEventEmitter,
-} from "./NativeAudioChunkRecorder";
-export type {
-  NativeAudioChunkRecorderInterface,
-  AudioChunkRecorderEvents,
-  AudioChunkRecorderEventType,
-} from "./NativeAudioChunkRecorder";
+export { useAudioFiles } from "./hooks/useAudioFiles";
+export { createJotaiStateManager } from "./adapters/jotaiAdapter";
+export { audioManager } from "./providers/audioManager";
 
 // Types
 export type {
@@ -32,16 +20,24 @@ export type {
   StateChangeData,
   AudioLevelData,
   RecordingOptions,
-  AlertProvider,
-  AlertButton,
   StateManager,
+  AlertProvider,
   InterruptionHandler,
   ChunkUploader,
 } from "./types";
 
+// Export types from useAudioLevel
+export type {
+  UseAudioLevelOptions,
+  UseAudioLevelReturn,
+} from "./hooks/useAudioLevel";
+
+// Native module
+export {
+  NativeAudioChunkRecorder,
+  AudioChunkRecorderEventEmitter,
+} from "./NativeAudioChunkRecorder";
+
 // Default providers
 export { reactNativeAlertProvider } from "./providers/reactNativeAlertProvider";
 export { createSimpleStateManager } from "./providers/simpleStateManager";
-
-// Adapters
-export { createJotaiStateManager } from "./adapters/jotaiAdapter";

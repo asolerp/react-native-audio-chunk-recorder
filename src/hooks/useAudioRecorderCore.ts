@@ -21,6 +21,7 @@ import type {
 } from "../types";
 import { reactNativeAlertProvider } from "../providers/reactNativeAlertProvider";
 import { createSimpleStateManager } from "../providers/simpleStateManager";
+import { audioManager } from "../providers/audioManager";
 
 // Mock native module interface - in real implementation this would come from native
 // Native interface - using the actual bridge
@@ -333,10 +334,6 @@ export const useAudioRecorderCore = (
     async (recordingOptions?: RecordingOptions) => {
       console.log("AudioRecorderCore: 🚀 startRecording called");
 
-      if (!serviceRef.current) {
-        throw new Error("AudioRecorderCore: Service not available");
-      }
-
       // Check if already recording to avoid "Recording is already in progress" error
       if (state.isRecording) {
         console.log(
@@ -351,13 +348,13 @@ export const useAudioRecorderCore = (
           ...recordingOptions,
         };
         console.log(
-          "AudioRecorderCore: 🚀 Calling native startRecording with options:",
+          "AudioRecorderCore: 🚀 Calling AudioManager startRecording with options:",
           finalOptions
         );
 
-        const result = await serviceRef.current.startRecording(finalOptions);
+        const result = await audioManager.startRecording(finalOptions);
         console.log(
-          "AudioRecorderCore: 🚀 Native startRecording result:",
+          "AudioRecorderCore: 🚀 AudioManager startRecording result:",
           result
         );
       } catch (error) {
@@ -369,12 +366,8 @@ export const useAudioRecorderCore = (
   );
 
   const stopRecording = useCallback(async () => {
-    if (!serviceRef.current) {
-      throw new Error("AudioRecorderCore: Service not available");
-    }
-
     try {
-      await serviceRef.current.stopRecording();
+      await audioManager.stopRecording();
     } catch (error) {
       console.error("AudioRecorderCore: Stop recording failed:", error);
       throw error;
@@ -480,6 +473,30 @@ export const useAudioRecorderCore = (
     state.isPaused,
     startRecording,
   ]);
+
+  // Listen to AudioManager state changes
+  useEffect(() => {
+    const unsubscribe = audioManager.addListener((type, active) => {
+      console.log(
+        `AudioRecorderCore: 📢 AudioManager notification - ${type}: ${active}`
+      );
+
+      if (type === "recording") {
+        if (!active && state.isRecording) {
+          // Recording was stopped by another hook or the manager
+          console.log(
+            "AudioRecorderCore: 📢 Recording stopped by AudioManager, updating state"
+          );
+          updateState({
+            isRecording: false,
+            isPaused: false,
+          });
+        }
+      }
+    });
+
+    return unsubscribe;
+  }, [state.isRecording, updateState]);
 
   // Optimized event subscription methods with memoization
   const onChunkReady = useCallback((callback: (chunk: ChunkData) => void) => {
