@@ -20,10 +20,10 @@ export interface UseAudioLevelPreviewReturn {
   requestPermissions: () => Promise<boolean>;
 }
 
-// PERFORMANCE: Throttle configuration
-const THROTTLE_MS = 100; // 10 FPS for smooth UI
-const AUDIO_THRESHOLD = 0.001; // Minimum level to consider as "has audio"
-const CHANGE_THRESHOLD = 0.001; // Minimum change to trigger update (much more sensitive)
+// PERFORMANCE: Throttle configuration (DISABLED FOR DEBUG)
+// const THROTTLE_MS = 100; // 10 FPS for smooth UI
+// const AUDIO_THRESHOLD = 0.001; // Minimum level to consider as "has audio"
+// const CHANGE_THRESHOLD = 0.001; // Minimum change to trigger update (much more sensitive)
 
 export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
   // PERFORMANCE: Use refs to avoid unnecessary re-renders
@@ -44,26 +44,16 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
 
   // PERFORMANCE: Memoized callback to prevent unnecessary re-renders
   const handleAudioLevel = useCallback((levelData: { level: number }) => {
-    const now = Date.now();
     const level = levelData.level;
 
     // DEBUG: Log all incoming values
     console.log("[AudioLevel] Raw level:", level);
 
-    // PERFORMANCE: Throttle updates and only update if level changed significantly
-    if (
-      now - lastUpdateRef.current > THROTTLE_MS &&
-      Math.abs(level - lastLevelRef.current) > CHANGE_THRESHOLD
-    ) {
-      lastUpdateRef.current = now;
-      lastLevelRef.current = level;
-
-      console.log("[AudioLevel] Updating to:", level);
-      setData({
-        level,
-        hasAudio: level > AUDIO_THRESHOLD,
-      });
-    }
+    // NO THROTTLING: Update immediately for all values
+    setData({
+      level,
+      hasAudio: level > 0,
+    });
   }, []);
 
   // PERFORMANCE: Optimized start preview with proper error handling

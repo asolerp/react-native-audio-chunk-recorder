@@ -158,6 +158,10 @@ class RecorderEngine(
         }
         val rms = kotlin.math.sqrt(sum / len) / 32768.0
         lastAudioLevel = rms.coerceAtMost(1.0)
+        
+        // DEBUG: Log computed audio level
+        android.util.Log.d("RecorderEngine", "Computed RMS level: $lastAudioLevel")
+        
         _levelFlow.value = lastAudioLevel
     }
 

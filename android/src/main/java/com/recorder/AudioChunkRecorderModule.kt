@@ -123,11 +123,12 @@ class AudioChunkRecorderModule(
                 try {
                     sharedEngine.start()
                     
-                    // PERFORMANCE: Throttle events to 10Hz (100ms) to reduce JS thread load
+                    // NO THROTTLING: Send all audio levels immediately
                     levelPreviewJob = sharedEngine.levelFlow
-                        .sample(100) // Throttle to 100ms intervals
                         .onEach { level ->
-                            // PERFORMANCE: Send all levels, let JS handle the filtering
+                            // DEBUG: Log all levels being sent
+                            android.util.Log.d("AudioChunkRecorder", "Sending audio level: $level")
+                            // Send all levels without any filtering
                             sendAudioLevel(level)
                         }
                         .launchIn(uiScope)
