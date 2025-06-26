@@ -16,6 +16,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import java.io.File
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 
 /**
  * AudioChunkRecorderModule (Native Orchestrator)
@@ -36,6 +39,51 @@ class AudioChunkRecorderModule(
 
     // -----------------  React Native name  --------------
     override fun getName(): String = "AudioChunkRecorder"
+
+    // -----------------  Module Availability  ------------
+    @ReactMethod
+    fun isAvailable(promise: Promise) {
+        try {
+            // Check if the module is properly initialized
+            val isAvailable = previewEngine != null && reactCtx != null
+            promise.resolve(isAvailable)
+        } catch (t: Throwable) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun checkPermissions(promise: Promise) {
+        try {
+            val hasPermission = ContextCompat.checkSelfPermission(
+                reactCtx,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            promise.resolve(hasPermission)
+        } catch (t: Throwable) {
+            promise.reject("PERMISSION_CHECK_ERROR", t.message)
+        }
+    }
+
+    @ReactMethod
+    fun clearAllChunkFiles(promise: Promise) {
+        try {
+            val chunksDir = File(reactCtx.filesDir, "AudioChunks")
+            if (chunksDir.exists()) {
+                val deletedFiles = chunksDir.listFiles()?.filter { it.isFile }?.size ?: 0
+                chunksDir.listFiles()?.forEach { file ->
+                    if (file.isFile) {
+                        file.delete()
+                    }
+                }
+                promise.resolve("Cleared $deletedFiles chunk files")
+            } else {
+                promise.resolve("No chunk files directory found")
+            }
+        } catch (t: Throwable) {
+            promise.reject("CLEAR_FILES_ERROR", t.message)
+        }
+    }
 
     // -----------------  Level Preview  ------------------
     @ReactMethod
