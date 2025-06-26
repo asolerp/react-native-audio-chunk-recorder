@@ -127,10 +127,8 @@ class AudioChunkRecorderModule(
                     levelPreviewJob = sharedEngine.levelFlow
                         .sample(100) // Throttle to 100ms intervals
                         .onEach { level ->
-                            // PERFORMANCE: Only send if level changed significantly
-                            if (level > 0.001 || level == 0.0) {
-                                sendAudioLevel(level)
-                            }
+                            // PERFORMANCE: Send all levels, let JS handle the filtering
+                            sendAudioLevel(level)
                         }
                         .launchIn(uiScope)
                     
