@@ -153,7 +153,7 @@ export function useAudioLevelPreview(): UseAudioLevelPreviewReturn {
         stopPreview().catch(console.error);
       }
     };
-  }, [isPreviewing, stopPreview]);
+  }, []); // PERFORMANCE: Remove dependencies to prevent re-mounts
 
   // PERFORMANCE: Memoized return value to prevent unnecessary re-renders
   return useMemo(
