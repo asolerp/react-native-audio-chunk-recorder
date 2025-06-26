@@ -44,10 +44,11 @@ export interface UseAudioLevelReturn {
 }
 
 /**
- * useAudioLevel - Simplified version for audio level monitoring
+ * useAudioLevel - Audio level monitoring using the same approach as useAudioRecorderCore
  *
- * This version assumes the native module is already configured and available.
- * Much simpler than the full version - similar to useAudioRecorderCore approach.
+ * This hook provides audio level monitoring by using the recording pipeline
+ * with very short chunks (< 1 second) to avoid file creation. It follows the
+ * same pattern as useAudioRecorderCore for consistency and reliability.
  */
 export function useAudioLevel(
   options: UseAudioLevelOptions = {}
@@ -75,8 +76,19 @@ export function useAudioLevel(
   const listenerRef = useRef<any>(null);
   const lastUpdateRef = useRef(Date.now());
   const lastHasAudioRef = useRef(false);
+  const serviceRef = useRef<any>(null);
 
-  // Handle audio level updates with throttling
+  // Initialize service - same as useAudioRecorderCore
+  useEffect(() => {
+    try {
+      serviceRef.current = NativeAudioChunkRecorder;
+    } catch (error) {
+      console.error("useAudioLevel: Failed to initialize service:", error);
+      setError("Service not available");
+    }
+  }, []);
+
+  // Handle audio level updates - same throttling logic as useAudioRecorderCore
   const handleAudioLevel = useCallback(
     (levelData: { level: number }) => {
       const now = Date.now();
@@ -137,61 +149,89 @@ export function useAudioLevel(
     ]
   );
 
-  // Start monitoring - Simplified version
+  // Setup event listener - same pattern as useAudioRecorderCore
+  useEffect(() => {
+    if (!serviceRef.current) return;
+
+    // Remove existing listener
+    if (listenerRef.current) {
+      listenerRef.current.remove();
+      listenerRef.current = null;
+    }
+
+    // Add new listener
+    listenerRef.current = AudioChunkRecorderEventEmitter.addListener(
+      "onAudioLevel",
+      handleAudioLevel
+    );
+
+    return () => {
+      if (listenerRef.current) {
+        listenerRef.current.remove();
+        listenerRef.current = null;
+      }
+    };
+  }, [handleAudioLevel]);
+
+  // Start monitoring - same approach as useAudioRecorderCore
   const startMonitoring = useCallback(async () => {
-    if (isMonitoring) return;
+    if (!serviceRef.current) {
+      throw new Error("useAudioLevel: Service not available");
+    }
+
+    if (isMonitoring) {
+      console.log("useAudioLevel: Already monitoring, skipping start request");
+      return;
+    }
 
     try {
       setError(undefined);
+      console.log("useAudioLevel: Starting monitoring...");
 
-      // Remove existing listener
-      if (listenerRef.current) {
-        listenerRef.current.remove();
-        listenerRef.current = null;
-      }
+      // Start recording with very short chunks (no file saving)
+      await serviceRef.current.startRecording({
+        sampleRate: 16000,
+        chunkSeconds: 0.1, // Less than 1s = no file saving
+      });
 
-      // Add new listener
-      listenerRef.current = AudioChunkRecorderEventEmitter.addListener(
-        "onAudioLevel",
-        handleAudioLevel
-      );
-
-      // Start native audio level preview
-      await NativeAudioChunkRecorder.startAudioLevelPreview();
       setIsMonitoring(true);
+      console.log("useAudioLevel: Monitoring started successfully");
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      setError(`Failed to start audio monitoring: ${errorMessage}`);
+      setError(`Failed to start monitoring: ${errorMessage}`);
       console.error("useAudioLevel: Failed to start monitoring:", err);
+      throw err;
     }
-  }, [isMonitoring, handleAudioLevel]);
+  }, [isMonitoring]);
 
-  // Stop monitoring
+  // Stop monitoring - same approach as useAudioRecorderCore
   const stopMonitoring = useCallback(async () => {
-    try {
-      await NativeAudioChunkRecorder.stopAudioLevelPreview();
-      setIsMonitoring(false);
+    if (!serviceRef.current) {
+      throw new Error("useAudioLevel: Service not available");
+    }
 
-      // Remove listener
-      if (listenerRef.current) {
-        listenerRef.current.remove();
-        listenerRef.current = null;
-      }
+    try {
+      console.log("useAudioLevel: Stopping monitoring...");
+      await serviceRef.current.stopRecording();
+      setIsMonitoring(false);
 
       // Reset state
       setData({ level: 0, hasAudio: false });
       lastHasAudioRef.current = false;
       setError(undefined);
+
+      console.log("useAudioLevel: Monitoring stopped successfully");
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      setError(`Failed to stop audio monitoring: ${errorMessage}`);
+      setError(`Failed to stop monitoring: ${errorMessage}`);
       console.error("useAudioLevel: Failed to stop monitoring:", err);
+      throw err;
     }
   }, []);
 
   // Auto-start if enabled
   useEffect(() => {
-    if (autoStart) {
+    if (autoStart && serviceRef.current) {
       startMonitoring().catch(console.error);
     }
   }, [autoStart, startMonitoring]);
@@ -201,6 +241,7 @@ export function useAudioLevel(
     return () => {
       if (listenerRef.current) {
         listenerRef.current.remove();
+        listenerRef.current = null;
       }
       if (isMonitoring) {
         stopMonitoring().catch(console.error);
@@ -210,8 +251,12 @@ export function useAudioLevel(
 
   // Debug method to check AudioRecord state
   const getAudioRecordState = useCallback(async () => {
+    if (!serviceRef.current) {
+      return "Service not available";
+    }
+
     try {
-      const state = await NativeAudioChunkRecorder.getAudioRecordState();
+      const state = await serviceRef.current.getAudioRecordState();
       return state;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -233,7 +278,7 @@ export function useAudioLevel(
 /**
  * USAGE EXAMPLES:
  *
- * // Basic usage - Much simpler now!
+ * // Basic usage - Uses recording pipeline with 100ms chunks (no file saving)
  * const { data, startMonitoring, stopMonitoring, isMonitoring } = useAudioLevel();
  *
  * // With custom options
@@ -246,7 +291,7 @@ export function useAudioLevel(
  *   autoStart: true,
  * });
  *
- * // VU Meter component
+ * // VU Meter component - High performance (60 FPS)
  * function VUMeter() {
  *   const { data, startMonitoring, stopMonitoring, isMonitoring } = useAudioLevel({
  *     throttleMs: 16, // 60 FPS
@@ -266,6 +311,25 @@ export function useAudioLevel(
  *           backgroundColor: data.hasAudio ? '#0f0' : '#666'
  *         }}
  *       />
+ *     </View>
+ *   );
+ * }
+ *
+ * // Voice activity detection
+ * function VoiceActivityDetector() {
+ *   const [isSpeaking, setIsSpeaking] = useState(false);
+ *
+ *   const { startMonitoring, stopMonitoring } = useAudioLevel({
+ *     audioThreshold: 0.005,
+ *     onAudioDetected: () => setIsSpeaking(true),
+ *     onAudioLost: () => setIsSpeaking(false),
+ *   });
+ *
+ *   return (
+ *     <View>
+ *       <Text>{isSpeaking ? 'Speaking...' : 'Silent'}</Text>
+ *       <Button title="Start Monitoring" onPress={startMonitoring} />
+ *       <Button title="Stop Monitoring" onPress={stopMonitoring} />
  *     </View>
  *   );
  * }

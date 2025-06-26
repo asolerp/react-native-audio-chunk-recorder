@@ -41,6 +41,7 @@ public class AudioRecorderManager {
     private volatile boolean isRecording = false;
     private volatile boolean isPaused = false;
     private volatile boolean isPreviewActive = false;
+    private volatile boolean isAudioLevelMonitoring = false;
     private final AtomicInteger currentChunkIndex = new AtomicInteger(0);
     private double chunkDuration = 30.0; // seconds
 
@@ -70,8 +71,17 @@ public class AudioRecorderManager {
             throw new IllegalStateException("Recording is already in progress");
         }
 
+        // Check if this is for audio level monitoring (very short chunks)
+        boolean isAudioLevelMonitoring = chunkDuration < 1.0; // Less than 1 second
+        
+        if (isAudioLevelMonitoring) {
+            Log.d(TAG, "Starting audio level monitoring mode (chunk duration: " + chunkDuration + "s)");
+        } else {
+            Log.d(TAG, "Starting normal recording mode (chunk duration: " + chunkDuration + "s)");
+        }
+
         this.chunkDuration = chunkDuration;
-        startNewChunk(sampleRate);
+        startNewChunk(sampleRate, isAudioLevelMonitoring);
     }
 
     /**
@@ -294,7 +304,7 @@ public class AudioRecorderManager {
      *                PRIVATE IMPLEMENTATION
      * ============================================================== */
 
-    private void startNewChunk(int sampleRate) throws Exception {
+    private void startNewChunk(int sampleRate, boolean isAudioLevelMonitoring) throws Exception {
         int bufferSize = AudioRecord.getMinBufferSize(sampleRate, CHANNEL_CONFIG, AUDIO_FORMAT);
         
         if (bufferSize == AudioRecord.ERROR_BAD_VALUE) {
@@ -316,14 +326,22 @@ public class AudioRecorderManager {
         audioRecord.startRecording();
         isRecording = true;
         isPaused = false;
+        this.isAudioLevelMonitoring = isAudioLevelMonitoring;
 
-        // Initialize audio data buffer
-        synchronized (audioDataLock) {
-            audioDataBuffer = new ByteArrayOutputStream();
+        // Initialize audio data buffer (only for normal recording)
+        if (!isAudioLevelMonitoring) {
+            synchronized (audioDataLock) {
+                audioDataBuffer = new ByteArrayOutputStream();
+            }
         }
 
         startCaptureLoop(bufferSize, sampleRate);
-        scheduleRotation(chunkDuration);
+        
+        // Only schedule rotation for normal recording
+        if (!isAudioLevelMonitoring) {
+            scheduleRotation(chunkDuration);
+        }
+        
         eventEmitter.sendStateChangeEvent(isRecording, isPaused);
     }
 
@@ -441,7 +459,7 @@ public class AudioRecorderManager {
         chunkTimer.schedule(new TimerTask() {
             @Override
             public void run() {
-                if (isRecording && !isPaused) {
+                if (isRecording && !isPaused && !isAudioLevelMonitoring) {
                     finishCurrentChunk();
                     try {
                         // Use the same sample rate as the current recording
@@ -453,7 +471,7 @@ public class AudioRecorderManager {
                         } catch (Exception e) {
                             Log.w(TAG, "Could not get current sample rate, using default");
                         }
-                        startNewChunk(currentSampleRate);
+                        startNewChunk(currentSampleRate, false);
                     } catch (Exception e) {
                         eventEmitter.sendErrorEvent(e.getMessage());
                     }
@@ -465,30 +483,36 @@ public class AudioRecorderManager {
     private void finishCurrentChunk() {
         if (audioRecord != null && isRecording && !isPaused) {
             audioRecord.stop();
-            File file = fileManager.createChunkFile(currentChunkIndex.get());
             
-            // Write WAV file with actual audio data
-            try {
-                byte[] audioData;
-                synchronized (audioDataLock) {
-                    audioData = audioDataBuffer != null ? audioDataBuffer.toByteArray() : new byte[0];
-                    audioDataBuffer = new ByteArrayOutputStream(); // Reset for next chunk
-                }
+            // Only save files for normal recording, not for audio level monitoring
+            if (!isAudioLevelMonitoring) {
+                File file = fileManager.createChunkFile(currentChunkIndex.get());
                 
-                // Get the actual sample rate from the current recording
-                int actualSampleRate = 16000; // Default fallback
+                // Write WAV file with actual audio data
                 try {
-                    actualSampleRate = audioRecord.getSampleRate();
-                } catch (Exception e) {
-                    Log.w(TAG, "Could not get sample rate, using default: 16000");
+                    byte[] audioData;
+                    synchronized (audioDataLock) {
+                        audioData = audioDataBuffer != null ? audioDataBuffer.toByteArray() : new byte[0];
+                        audioDataBuffer = new ByteArrayOutputStream(); // Reset for next chunk
+                    }
+                    
+                    // Get the actual sample rate from the current recording
+                    int actualSampleRate = 16000; // Default fallback
+                    try {
+                        actualSampleRate = audioRecord.getSampleRate();
+                    } catch (Exception e) {
+                        Log.w(TAG, "Could not get sample rate, using default: 16000");
+                    }
+                    
+                    fileManager.writeWavFile(file, audioData, actualSampleRate);
+                    eventEmitter.sendChunkReadyEvent(file.getAbsolutePath(), currentChunkIndex.get());
+                    currentChunkIndex.incrementAndGet();
+                } catch (IOException e) {
+                    Log.e(TAG, "Error writing WAV file: " + e.getMessage());
+                    eventEmitter.sendErrorEvent("Failed to write WAV file: " + e.getMessage());
                 }
-                
-                fileManager.writeWavFile(file, audioData, actualSampleRate);
-                eventEmitter.sendChunkReadyEvent(file.getAbsolutePath(), currentChunkIndex.get());
-                currentChunkIndex.incrementAndGet();
-            } catch (IOException e) {
-                Log.e(TAG, "Error writing WAV file: " + e.getMessage());
-                eventEmitter.sendErrorEvent("Failed to write WAV file: " + e.getMessage());
+            } else {
+                Log.d(TAG, "Audio level monitoring mode - skipping file save");
             }
         }
     }
