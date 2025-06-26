@@ -77,5 +77,8 @@
     "react-native-audio-chunk-recorder.podspec",
     ".npmrc",
     "README.md"
-  ]
+  ],
+  "bin": {
+    "react-native-audio-chunk-recorder-verify": "scripts/verify-android-linking.js"
+  }
 }

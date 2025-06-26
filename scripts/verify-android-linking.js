@@ -58,38 +58,120 @@ if (!fs.existsSync(androidPath)) {
 
 console.log("✅ Android source found");
 
-// Check MainApplication.kt for auto-linking
-const mainApplicationPath = path.join(
-  "android",
-  "app",
-  "src",
-  "main",
-  "java",
-  "com",
-  "example",
-  "MainApplication.kt"
-);
-const mainApplicationJavaPath = path.join(
-  "android",
-  "app",
-  "src",
-  "main",
-  "java",
-  "com",
-  "example",
-  "MainApplication.java"
-);
+// Find MainApplication in common locations
+const possibleMainApplicationPaths = [
+  path.join(
+    "android",
+    "app",
+    "src",
+    "main",
+    "java",
+    "com",
+    "example",
+    "MainApplication.kt"
+  ),
+  path.join(
+    "android",
+    "app",
+    "src",
+    "main",
+    "java",
+    "com",
+    "example",
+    "MainApplication.java"
+  ),
+  path.join(
+    "android",
+    "app",
+    "src",
+    "main",
+    "java",
+    "com",
+    "app",
+    "MainApplication.kt"
+  ),
+  path.join(
+    "android",
+    "app",
+    "src",
+    "main",
+    "java",
+    "com",
+    "app",
+    "MainApplication.java"
+  ),
+  path.join(
+    "android",
+    "app",
+    "src",
+    "main",
+    "java",
+    "com",
+    "myapp",
+    "MainApplication.kt"
+  ),
+  path.join(
+    "android",
+    "app",
+    "src",
+    "main",
+    "java",
+    "com",
+    "myapp",
+    "MainApplication.java"
+  ),
+];
 
+let mainApplicationPath = null;
 let mainApplicationContent = "";
-if (fs.existsSync(mainApplicationPath)) {
-  mainApplicationContent = fs.readFileSync(mainApplicationPath, "utf8");
-} else if (fs.existsSync(mainApplicationJavaPath)) {
-  mainApplicationContent = fs.readFileSync(mainApplicationJavaPath, "utf8");
-} else {
-  console.log("⚠️  MainApplication not found in expected location");
-  console.log("📋 Check your app package name and structure");
+
+for (const possiblePath of possibleMainApplicationPaths) {
+  if (fs.existsSync(possiblePath)) {
+    mainApplicationPath = possiblePath;
+    mainApplicationContent = fs.readFileSync(possiblePath, "utf8");
+    console.log(`✅ MainApplication found: ${possiblePath}`);
+    break;
+  }
 }
 
+if (!mainApplicationPath) {
+  console.log("⚠️  MainApplication not found in expected locations");
+  console.log("📋 Searching for MainApplication files...");
+
+  // Search recursively for MainApplication files
+  const searchMainApplication = (dir) => {
+    try {
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        const fullPath = path.join(dir, file);
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()) {
+          searchMainApplication(fullPath);
+        } else if (
+          file === "MainApplication.kt" ||
+          file === "MainApplication.java"
+        ) {
+          console.log(`📁 Found MainApplication: ${fullPath}`);
+          mainApplicationPath = fullPath;
+          mainApplicationContent = fs.readFileSync(fullPath, "utf8");
+          return;
+        }
+      }
+    } catch (error) {
+      // Ignore errors
+    }
+  };
+
+  searchMainApplication("android");
+
+  if (!mainApplicationPath) {
+    console.log("❌ MainApplication not found anywhere");
+    console.log("📋 Check your app package name and structure");
+    process.exit(1);
+  }
+}
+
+// Check for auto-linking in MainApplication
 if (mainApplicationContent) {
   const hasAutoLinking =
     mainApplicationContent.includes("new AudioChunkRecorderPackage()") ||
@@ -99,7 +181,21 @@ if (mainApplicationContent) {
     console.log("✅ Auto-linking detected in MainApplication");
   } else {
     console.log("⚠️  Auto-linking not detected in MainApplication");
-    console.log("📋 Manual linking may be required");
+    console.log("📋 Manual linking required");
+
+    // Show the current MainApplication content for reference
+    console.log("\n📄 Current MainApplication content:");
+    console.log("---");
+    console.log(mainApplicationContent.substring(0, 500) + "...");
+    console.log("---");
+
+    console.log("\n🔧 Add this to your MainApplication:");
+    console.log(
+      "1. Add import: import com.recorder.AudioChunkRecorderPackage;"
+    );
+    console.log(
+      "2. Add to getPackages(): packages.add(AudioChunkRecorderPackage());"
+    );
   }
 }
 
