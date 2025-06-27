@@ -95,18 +95,21 @@ public class AudioRecorderManager {
         Log.d(TAG, "Stopping recording...");
 
         try {
-            isRecording = false; // NEW: Set this first to stop recording loop
+            // 1) Finalize current chunk **before** marking isRecording = false
+            if (!isPaused) {
+                finishCurrentChunk();
+            }
+
+            // 2) Mark recording as stopped and stop capture loop
+            isRecording = false;
             stopCaptureLoop();
 
+            // 3) Cancel any pending timers
             if (chunkTimer != null) {
                 chunkTimer.cancel();
                 chunkTimer = null;
             }
             
-            if (!isPaused) {
-                finishCurrentChunk();
-            }
-
             if (audioRecord != null && !isPreviewActive) { // NEW: Only release if not in preview
                 audioRecord.release();
                 audioRecord = null;
