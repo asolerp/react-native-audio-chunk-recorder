@@ -95,10 +95,8 @@ public class AudioRecorderManager {
         Log.d(TAG, "Stopping recording...");
 
         try {
-            // 1) Finalize current chunk **before** marking isRecording = false
-            if (!isPaused) {
-                finishCurrentChunk();
-            }
+            // 1) Finalize current chunk (even if we were paused)
+            finishCurrentChunk();
 
             // 2) Mark recording as stopped and stop capture loop
             isRecording = false;
@@ -484,8 +482,11 @@ public class AudioRecorderManager {
     }
 
     private void finishCurrentChunk() {
-        if (audioRecord != null && isRecording && !isPaused) {
-            audioRecord.stop();
+        if (audioRecord != null && isRecording) {
+            // Stop only if still in RECORDING state to avoid IllegalStateException
+            if (audioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
+                audioRecord.stop();
+            }
             
             // Only save files for normal recording, not for audio level monitoring
             if (!isAudioLevelMonitoring) {
