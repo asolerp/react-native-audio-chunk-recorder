@@ -11,12 +11,16 @@ export interface ChunkData {
   uri: string;
   path: string;
   seq: number;
+  duration?: number; // Duration in seconds
+  timestamp?: number; // When the chunk was created (Unix timestamp)
+  size?: number; // File size in bytes
 }
 
 export interface RecordingOptions {
   sampleRate?: number; // Default: 16000
   bitRate?: number; // Default: 64000
   chunkSeconds?: number; // Default: 30
+  maxRecordingDuration?: number; // Default: 7200 (2 hours in seconds)
 }
 
 // Aliases for compatibility
@@ -26,6 +30,12 @@ export type AudioChunk = ChunkData;
 export interface ErrorData {
   message: string;
   code?: number;
+}
+
+export interface MaxDurationReachedData {
+  duration: number;
+  maxDuration: number;
+  chunks: ChunkData[];
 }
 
 export interface InterruptionData {
@@ -99,6 +109,7 @@ export interface AudioRecorderCoreOptions {
   onError?: (error: ErrorData) => void;
   onInterruption?: (interruption: InterruptionData) => void;
   onStateChange?: (state: StateChangeData) => void;
+  onMaxDurationReached?: (data: MaxDurationReachedData) => void;
 }
 
 // ===== HOOK RETURN TYPES =====
@@ -117,6 +128,11 @@ export interface AudioRecorderCoreReturn {
   isAvailable: boolean;
   isInterrupted: boolean;
 
+  // Recording duration tracking
+  recordingDuration: number; // Current recording duration in seconds
+  maxRecordingDuration: number; // Maximum allowed duration in seconds
+  remainingDuration: number; // Remaining time in seconds
+
   // Queue state (if enabled)
   queueSize?: number;
   isUploading?: boolean;
@@ -130,6 +146,11 @@ export interface AudioRecorderCoreReturn {
   clearAllChunkFiles: () => Promise<void>;
   checkPermissions: () => Promise<void>;
 
+  // Duration utilities
+  getChunkDuration: (chunkIndex: number) => number; // Get duration of specific chunk
+  getTotalChunksDuration: () => number; // Get total duration of all chunks
+  getExpectedChunkDuration: () => number; // Get expected chunk duration from settings
+
   // Event handlers (for custom logic)
   onChunkReady: (callback: (chunk: ChunkData) => void) => () => void;
   onAudioLevel: (callback: (levelData: AudioLevelData) => void) => () => void;
@@ -138,4 +159,7 @@ export interface AudioRecorderCoreReturn {
     callback: (interruption: InterruptionData) => void
   ) => () => void;
   onStateChange: (callback: (state: StateChangeData) => void) => () => void;
+  onMaxDurationReached: (
+    callback: (data: MaxDurationReachedData) => void
+  ) => () => void;
 }

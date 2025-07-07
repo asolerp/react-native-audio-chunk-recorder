@@ -45,6 +45,10 @@ public class AudioRecorderManager {
     private final AtomicInteger currentChunkIndex = new AtomicInteger(0);
     private double chunkDuration = 30.0; // seconds
 
+    // Chunk timing tracking
+    private long currentChunkStartTime = 0;
+    private long recordingStartTime = 0;
+
     // Audio processing
     private ByteArrayOutputStream audioDataBuffer;
     private final Object audioDataLock = new Object();
@@ -329,6 +333,12 @@ public class AudioRecorderManager {
         isPaused = false;
         this.isAudioLevelMonitoring = isAudioLevelMonitoring;
 
+        // Track chunk timing
+        currentChunkStartTime = System.currentTimeMillis();
+        if (recordingStartTime == 0) {
+            recordingStartTime = currentChunkStartTime;
+        }
+
         // Initialize audio data buffer (only for normal recording)
         if (!isAudioLevelMonitoring) {
             synchronized (audioDataLock) {
@@ -492,6 +502,10 @@ public class AudioRecorderManager {
             if (!isAudioLevelMonitoring) {
                 File file = fileManager.createChunkFile(currentChunkIndex.get());
                 
+                // Calculate actual chunk duration
+                long chunkEndTime = System.currentTimeMillis();
+                double actualDuration = (chunkEndTime - currentChunkStartTime) / 1000.0;
+                
                 // Write WAV file with actual audio data
                 try {
                     byte[] audioData;
@@ -509,7 +523,19 @@ public class AudioRecorderManager {
                     }
                     
                     fileManager.writeWavFile(file, audioData, actualSampleRate);
-                    eventEmitter.sendChunkReadyEvent(file.getAbsolutePath(), currentChunkIndex.get());
+                    
+                    // Get file size
+                    long fileSize = file.length();
+                    
+                    // Send chunk ready event with duration info
+                    eventEmitter.sendChunkReadyEvent(
+                        file.getAbsolutePath(), 
+                        currentChunkIndex.get(), 
+                        actualDuration,
+                        currentChunkStartTime,
+                        fileSize
+                    );
+                    
                     currentChunkIndex.incrementAndGet();
                 } catch (IOException e) {
                     Log.e(TAG, "Error writing WAV file: " + e.getMessage());

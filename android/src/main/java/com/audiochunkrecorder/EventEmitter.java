@@ -62,13 +62,16 @@ public class EventEmitter {
     }
 
     /**
-     * Send chunk ready event
+     * Send chunk ready event with duration and timing info
      */
-    public void sendChunkReadyEvent(String path, int sequence) {
+    public void sendChunkReadyEvent(String path, int sequence, double duration, long timestamp, long fileSize) {
         WritableMap map = Arguments.createMap();
         map.putString("uri", path);
         map.putString("path", path);
         map.putInt("seq", sequence);
+        map.putDouble("duration", duration);
+        map.putDouble("timestamp", timestamp);
+        map.putDouble("size", fileSize);
         sendEvent("onChunkReady", map);
     }
 

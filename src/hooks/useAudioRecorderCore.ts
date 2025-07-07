@@ -18,6 +18,7 @@ import type {
   StateChangeData,
   AudioLevelData,
   RecordingOptions,
+  MaxDurationReachedData,
 } from "../types";
 import { reactNativeAlertProvider } from "../providers/reactNativeAlertProvider";
 import { createSimpleStateManager } from "../providers/simpleStateManager";
@@ -48,6 +49,7 @@ class EventListenerManager {
     onError: new Set<(error: ErrorData) => void>(),
     onInterruption: new Set<(interruption: InterruptionData) => void>(),
     onStateChange: new Set<(state: StateChangeData) => void>(),
+    onMaxDurationReached: new Set<(data: MaxDurationReachedData) => void>(),
   };
 
   private nativeListeners: any[] = [];
@@ -280,7 +282,14 @@ export const useAudioRecorderCore = (
     hasAudio: false,
     isAvailable: false,
     isInterrupted: false,
+    recordingDuration: 0,
+    maxRecordingDuration: 7200, // 2 hours default
   });
+
+  // Recording duration tracking
+  const recordingStartTimeRef = useRef<number | null>(null);
+  const pausedTimeRef = useRef<number>(0);
+  const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Event listener manager - singleton instance
   const eventManagerRef = useRef<EventListenerManager | null>(null);
@@ -359,14 +368,22 @@ export const useAudioRecorderCore = (
           ...recordingOptions,
         };
 
+        // Set max duration (default 2 hours)
+        const maxDuration = finalOptions.maxRecordingDuration ?? 7200;
+
         errorTracker.addBreadcrumb({
           message: "Starting audio recording",
           category: "audio_recording",
           level: "info",
-          data: finalOptions,
+          data: { ...finalOptions, maxDuration },
         });
 
         const result = await audioManager.startRecording(finalOptions);
+
+        // Start duration tracking
+        recordingStartTimeRef.current = Date.now();
+        pausedTimeRef.current = 0;
+        updateState({ maxRecordingDuration: maxDuration });
       } catch (error) {
         console.error("AudioRecorderCore: ❌ Start recording failed:", error);
         errorTracker.captureException(error as Error, {
@@ -376,7 +393,12 @@ export const useAudioRecorderCore = (
         throw error;
       }
     },
-    [state.isRecording, options.defaultRecordingOptions, errorTracker]
+    [
+      state.isRecording,
+      options.defaultRecordingOptions,
+      errorTracker,
+      updateState,
+    ]
   );
 
   const stopRecording = useCallback(async () => {
@@ -404,6 +426,10 @@ export const useAudioRecorderCore = (
 
     try {
       await serviceRef.current.pauseRecording();
+      // Pause duration tracking
+      if (recordingStartTimeRef.current) {
+        pausedTimeRef.current += Date.now() - recordingStartTimeRef.current;
+      }
     } catch (error) {
       console.error("AudioRecorderCore: Pause recording failed:", error);
       throw error;
@@ -417,6 +443,10 @@ export const useAudioRecorderCore = (
 
     try {
       await serviceRef.current.resumeRecording();
+      // Resume duration tracking
+      if (recordingStartTimeRef.current) {
+        recordingStartTimeRef.current = Date.now();
+      }
     } catch (error) {
       console.error("AudioRecorderCore: Resume recording failed:", error);
       throw error;
@@ -469,6 +499,95 @@ export const useAudioRecorderCore = (
     }
   }, [updateState, errorTracker]);
 
+  // Duration tracking functions
+  const startDurationTracking = useCallback(
+    (maxDuration: number) => {
+      recordingStartTimeRef.current = Date.now();
+      pausedTimeRef.current = 0;
+      updateState({ maxRecordingDuration: maxDuration });
+
+      if (durationIntervalRef.current) {
+        clearInterval(durationIntervalRef.current);
+      }
+
+      durationIntervalRef.current = setInterval(() => {
+        if (recordingStartTimeRef.current && !state.isPaused) {
+          const elapsed =
+            (Date.now() -
+              recordingStartTimeRef.current -
+              pausedTimeRef.current) /
+            1000;
+          updateState({ recordingDuration: elapsed });
+
+          // Check if max duration reached
+          if (elapsed >= maxDuration) {
+            clearInterval(durationIntervalRef.current!);
+            durationIntervalRef.current = null;
+
+            // Stop recording and notify
+            stopRecording()
+              .then(() => {
+                const maxDurationData: MaxDurationReachedData = {
+                  duration: elapsed,
+                  maxDuration: maxDuration,
+                  chunks: state.chunks,
+                };
+
+                eventManagerRef.current!.notifyListeners(
+                  "onMaxDurationReached",
+                  maxDurationData
+                );
+                options.onMaxDurationReached?.(maxDurationData);
+
+                errorTracker.addBreadcrumb({
+                  message: `Max recording duration reached: ${elapsed}s / ${maxDuration}s`,
+                  category: "recording_limit",
+                  level: "info",
+                  data: maxDurationData,
+                });
+              })
+              .catch((error) => {
+                console.error(
+                  "AudioRecorderCore: Failed to stop recording on max duration:",
+                  error
+                );
+              });
+          }
+        }
+      }, 1000);
+    },
+    [
+      state.isPaused,
+      state.chunks,
+      updateState,
+      stopRecording,
+      options.onMaxDurationReached,
+      errorTracker,
+    ]
+  );
+
+  const stopDurationTracking = useCallback(() => {
+    if (durationIntervalRef.current) {
+      clearInterval(durationIntervalRef.current);
+      durationIntervalRef.current = null;
+    }
+    recordingStartTimeRef.current = null;
+    pausedTimeRef.current = 0;
+    updateState({ recordingDuration: 0 });
+  }, [updateState]);
+
+  const pauseDurationTracking = useCallback(() => {
+    if (recordingStartTimeRef.current) {
+      pausedTimeRef.current += Date.now() - recordingStartTimeRef.current;
+    }
+  }, []);
+
+  const resumeDurationTracking = useCallback(() => {
+    if (recordingStartTimeRef.current) {
+      recordingStartTimeRef.current = Date.now();
+    }
+  }, []);
+
   // Auto check permissions on mount - moved after checkPermissions definition
   useEffect(() => {
     if (options.autoCheckPermissions !== false && serviceRef.current) {
@@ -477,6 +596,84 @@ export const useAudioRecorderCore = (
       })();
     }
   }, [options.autoCheckPermissions, checkPermissions]);
+
+  // Start duration tracking when recording starts
+  useEffect(() => {
+    if (state.isRecording && !state.isPaused && recordingStartTimeRef.current) {
+      if (durationIntervalRef.current) {
+        clearInterval(durationIntervalRef.current);
+      }
+
+      durationIntervalRef.current = setInterval(() => {
+        if (recordingStartTimeRef.current && !state.isPaused) {
+          const elapsed =
+            (Date.now() -
+              recordingStartTimeRef.current -
+              pausedTimeRef.current) /
+            1000;
+          updateState({ recordingDuration: elapsed });
+
+          // Check if max duration reached
+          if (elapsed >= state.maxRecordingDuration) {
+            clearInterval(durationIntervalRef.current!);
+            durationIntervalRef.current = null;
+
+            // Stop recording and notify
+            stopRecording()
+              .then(() => {
+                const maxDurationData: MaxDurationReachedData = {
+                  duration: elapsed,
+                  maxDuration: state.maxRecordingDuration,
+                  chunks: state.chunks,
+                };
+
+                eventManagerRef.current!.notifyListeners(
+                  "onMaxDurationReached",
+                  maxDurationData
+                );
+                options.onMaxDurationReached?.(maxDurationData);
+
+                errorTracker.addBreadcrumb({
+                  message: `Max recording duration reached: ${elapsed}s / ${state.maxRecordingDuration}s`,
+                  category: "recording_limit",
+                  level: "info",
+                  data: maxDurationData,
+                });
+              })
+              .catch((error) => {
+                console.error(
+                  "AudioRecorderCore: Failed to stop recording on max duration:",
+                  error
+                );
+              });
+          }
+        }
+      }, 1000);
+    } else if (!state.isRecording && durationIntervalRef.current) {
+      // Stop tracking when recording stops
+      clearInterval(durationIntervalRef.current);
+      durationIntervalRef.current = null;
+      recordingStartTimeRef.current = null;
+      pausedTimeRef.current = 0;
+      updateState({ recordingDuration: 0 });
+    }
+
+    return () => {
+      if (durationIntervalRef.current) {
+        clearInterval(durationIntervalRef.current);
+        durationIntervalRef.current = null;
+      }
+    };
+  }, [
+    state.isRecording,
+    state.isPaused,
+    state.maxRecordingDuration,
+    state.chunks,
+    updateState,
+    stopRecording,
+    options.onMaxDurationReached,
+    errorTracker,
+  ]);
 
   // Auto start recording when conditions are met
   useEffect(() => {
@@ -567,6 +764,47 @@ export const useAudioRecorderCore = (
     []
   );
 
+  const onMaxDurationReached = useCallback(
+    (callback: (data: MaxDurationReachedData) => void) => {
+      eventManagerRef.current!.addListener("onMaxDurationReached", callback);
+      return () => {
+        eventManagerRef.current!.removeListener(
+          "onMaxDurationReached",
+          callback
+        );
+      };
+    },
+    []
+  );
+
+  // Duration utility functions
+  const getChunkDuration = useCallback(
+    (chunkIndex: number): number => {
+      if (chunkIndex >= 0 && chunkIndex < state.chunks.length) {
+        const chunk = state.chunks[chunkIndex];
+        return chunk.duration || 0;
+      }
+      return 0;
+    },
+    [state.chunks]
+  );
+
+  const getTotalChunksDuration = useCallback((): number => {
+    return state.chunks.reduce(
+      (total, chunk) => total + (chunk.duration || 0),
+      0
+    );
+  }, [state.chunks]);
+
+  const getExpectedChunkDuration = useCallback((): number => {
+    return options.defaultRecordingOptions?.chunkSeconds || 30;
+  }, [options.defaultRecordingOptions]);
+
+  // Calculate remaining duration
+  const remainingDuration = useMemo(() => {
+    return Math.max(0, state.maxRecordingDuration - state.recordingDuration);
+  }, [state.maxRecordingDuration, state.recordingDuration]);
+
   // Memoized return object to prevent unnecessary re-renders
   const returnValue = useMemo<AudioRecorderCoreReturn>(
     () => ({
@@ -583,6 +821,11 @@ export const useAudioRecorderCore = (
       isAvailable: state.isAvailable,
       isInterrupted: state.isInterrupted,
 
+      // Recording duration tracking
+      recordingDuration: state.recordingDuration,
+      maxRecordingDuration: state.maxRecordingDuration,
+      remainingDuration: remainingDuration,
+
       // Actions
       startRecording,
       stopRecording,
@@ -592,12 +835,18 @@ export const useAudioRecorderCore = (
       clearAllChunkFiles,
       checkPermissions,
 
+      // Duration utilities
+      getChunkDuration,
+      getTotalChunksDuration,
+      getExpectedChunkDuration,
+
       // Event handlers
       onChunkReady,
       onAudioLevel,
       onError,
       onInterruption,
       onStateChange,
+      onMaxDurationReached,
     }),
     [
       state.isRecording,
@@ -608,6 +857,9 @@ export const useAudioRecorderCore = (
       state.hasAudio,
       state.isAvailable,
       state.isInterrupted,
+      state.recordingDuration,
+      state.maxRecordingDuration,
+      remainingDuration,
       startRecording,
       stopRecording,
       pauseRecording,
@@ -615,11 +867,15 @@ export const useAudioRecorderCore = (
       clearChunks,
       clearAllChunkFiles,
       checkPermissions,
+      getChunkDuration,
+      getTotalChunksDuration,
+      getExpectedChunkDuration,
       onChunkReady,
       onAudioLevel,
       onError,
       onInterruption,
       onStateChange,
+      onMaxDurationReached,
     ]
   );
 
