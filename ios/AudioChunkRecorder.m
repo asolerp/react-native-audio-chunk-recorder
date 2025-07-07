@@ -14,10 +14,13 @@ static const NSInteger       kDefaultChunkSecs  = 30;
 @property (nonatomic, strong) AVAudioRecorder *recorder;
 @property (nonatomic)            dispatch_source_t timer;
 @property (nonatomic)            dispatch_source_t levelTimer;
+@property (nonatomic)            dispatch_source_t maxDurationTimer;
 @property (nonatomic)            NSInteger seq;
 @property (nonatomic)            double sampleRate;
 @property (nonatomic)            NSInteger bitRate;
 @property (nonatomic)            NSInteger chunkSeconds;
+@property (nonatomic)            NSTimeInterval maxRecordingDuration;
+@property (nonatomic)            NSTimeInterval recordingStartTime;
 @property (nonatomic)            BOOL isRecording;
 @property (nonatomic)            BOOL isPaused;
 @property (nonatomic, copy)      NSString *currentFilePath;
@@ -38,7 +41,7 @@ RCT_EXPORT_MODULE();
 }
 
 - (NSArray<NSString *> *)supportedEvents {
-    return @[@"onChunkReady", @"onError", @"onAudioLevel", @"onInterruption", @"onStateChange"];
+    return @[@"onChunkReady", @"onError", @"onAudioLevel", @"onInterruption", @"onStateChange", @"onMaxDurationReached"];
 }
 
 #pragma mark - Public API
@@ -57,10 +60,12 @@ RCT_EXPORT_METHOD(startRecording:(NSDictionary *)options
     self.sampleRate   = [options[@"sampleRate"] doubleValue]   ?: kDefaultSampleRate;
     self.bitRate      = [options[@"bitRate"] integerValue]     ?: kDefaultBitRate;
     self.chunkSeconds = [options[@"chunkSeconds"] integerValue] ?: kDefaultChunkSecs;
+    self.maxRecordingDuration = [options[@"maxRecordingDuration"] doubleValue] ?: 7200.0; // Default 2 hours
     self.seq = 0;
     self.isPaused = NO;
     self.interruptionEventSent = NO; // Reset for new recording session
     self.lastInterruptionEndTime = 0; // Reset for new recording session
+    self.recordingStartTime = [NSDate timeIntervalSinceReferenceDate]; // Track total recording start time
 
     // Check microphone permission
     AVAudioSessionRecordPermission perm = [[AVAudioSession sharedInstance] recordPermission];
@@ -84,6 +89,7 @@ RCT_EXPORT_METHOD(startRecording:(NSDictionary *)options
         [self setupAudioSessionNotifications];
         [self scheduleRotation];
         [self startAudioLevelMonitoring];
+        [self startMaxDurationTracking]; // Start max duration tracking
         resolve(@"Recording started");
     });
 }
@@ -105,6 +111,7 @@ RCT_EXPORT_METHOD(stopRecording:(RCTPromiseResolveBlock)resolve
     self.lastInterruptionEndTime = 0; // Reset for next recording session
     [self removeAudioSessionNotifications];
     [self stopAudioLevelMonitoring];
+    [self stopMaxDurationTracking]; // Stop max duration tracking
     [self finishCurrentChunk];
     [self resetState];
     
@@ -130,6 +137,9 @@ RCT_EXPORT_METHOD(pauseRecording:(RCTPromiseResolveBlock)resolve
     
     // Stop audio level monitoring when paused
     [self stopAudioLevelMonitoring];
+    
+    // Pause max duration tracking
+    [self pauseMaxDurationTracking];
     
     // Pause the recorder (don't stop it)
     if (self.recorder && self.recorder.isRecording) {
@@ -168,6 +178,9 @@ RCT_EXPORT_METHOD(resumeRecording:(RCTPromiseResolveBlock)resolve
     
     // Restart audio level monitoring when resumed
     [self startAudioLevelMonitoring];
+    
+    // Resume max duration tracking
+    [self resumeMaxDurationTracking];
     
     // Calculate remaining time for this chunk
     NSTimeInterval remainingTime = self.chunkSeconds - self.accumulatedRecordingTime;
@@ -232,12 +245,19 @@ RCT_EXPORT_METHOD(isRecording:(RCTPromiseResolveBlock)resolve
 // Get current AudioRecord state for debugging
 RCT_EXPORT_METHOD(getAudioRecordState:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject) {
+    NSTimeInterval currentTime = [NSDate timeIntervalSinceReferenceDate];
+    NSTimeInterval elapsedRecordingTime = self.recordingStartTime > 0 ? (currentTime - self.recordingStartTime) : 0;
+    NSTimeInterval remainingTime = self.maxRecordingDuration > 0 ? (self.maxRecordingDuration - elapsedRecordingTime) : 0;
+    
     NSDictionary *state = @{
         @"isRecording": @(self.isRecording),
         @"isPaused": @(self.isPaused),
         @"seq": @(self.seq),
         @"sampleRate": @(self.sampleRate),
         @"chunkSeconds": @(self.chunkSeconds),
+        @"maxRecordingDuration": @(self.maxRecordingDuration),
+        @"elapsedRecordingTime": @(elapsedRecordingTime),
+        @"remainingTime": @(remainingTime),
         @"currentFilePath": self.currentFilePath ?: @"",
         @"accumulatedRecordingTime": @(self.accumulatedRecordingTime),
         @"interruptionEventSent": @(self.interruptionEventSent)
@@ -381,26 +401,38 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     // FIXED: Capture the file path and seq in local variables to avoid race conditions
     NSString *filePath = self.currentFilePath;
     NSInteger chunkSeq = self.seq;
+    NSTimeInterval chunkStartTimestamp = self.chunkStartTime;
     
     if (!filePath) { 
         NSLog(@"AudioChunkRecorder: No currentFilePath to finish");
         return; 
     }
     
-    NSLog(@"AudioChunkRecorder: Finishing chunk %ld at path: %@", (long)chunkSeq, filePath);
+    // Calculate actual chunk duration
+    NSTimeInterval chunkEndTime = [NSDate timeIntervalSinceReferenceDate];
+    NSTimeInterval actualDuration = self.accumulatedRecordingTime + (chunkEndTime - self.chunkStartTime);
+    
+    NSLog(@"AudioChunkRecorder: Finishing chunk %ld at path: %@, duration: %.2fs", (long)chunkSeq, filePath, actualDuration);
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         NSFileManager *fm = [NSFileManager defaultManager];
         if ([fm fileExistsAtPath:filePath]) {
-            NSNumber *size = [fm attributesOfItemAtPath:filePath error:nil][NSFileSize];
+            NSDictionary *attributes = [fm attributesOfItemAtPath:filePath error:nil];
+            NSNumber *size = attributes[NSFileSize];
             NSLog(@"AudioChunkRecorder: File exists, size: %@ bytes", size);
             if (size.unsignedLongLongValue > 0) {
-                NSLog(@"AudioChunkRecorder: 🎯 EMITTING CHUNK TO FRONTEND - seq: %ld, path: %@, size: %@ bytes", (long)chunkSeq, filePath, size);
+                NSLog(@"AudioChunkRecorder: 🎯 EMITTING CHUNK TO FRONTEND - seq: %ld, path: %@, size: %@ bytes, duration: %.2fs", (long)chunkSeq, filePath, size, actualDuration);
+                
+                // Convert timestamp to milliseconds (Unix timestamp)
+                NSTimeInterval timestampMs = chunkStartTimestamp * 1000;
                 
                 NSDictionary *chunkData = @{
                     @"uri": [NSURL fileURLWithPath:filePath].absoluteString,
                     @"path": filePath,
-                    @"seq": @(chunkSeq)
+                    @"seq": @(chunkSeq),
+                    @"duration": @(actualDuration),
+                    @"timestamp": @(timestampMs),
+                    @"size": size
                 };
                 
                 NSLog(@"AudioChunkRecorder: 📤 Event data: %@", chunkData);
@@ -642,6 +674,9 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     // Stop audio level monitoring
     [self stopAudioLevelMonitoring];
     
+    // Pause max duration tracking
+    [self pauseMaxDurationTracking];
+    
     // Pause the recorder
     if (self.recorder && self.recorder.isRecording) {
         [self.recorder pause];
@@ -664,17 +699,113 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     [self sendEventWithName:@"onStateChange" body:stateData];
 }
 
+#pragma mark - Max Duration Tracking
+
+// Starts tracking maximum recording duration
+- (void)startMaxDurationTracking {
+    if (self.maxDurationTimer) {
+        dispatch_source_cancel(self.maxDurationTimer);
+    }
+    
+    if (self.maxRecordingDuration <= 0) {
+        return; // No limit set
+    }
+    
+    self.maxDurationTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(self.maxDurationTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, self.maxRecordingDuration * NSEC_PER_SEC),
+                              DISPATCH_TIME_FOREVER, // One-time timer
+                              0);
+    
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(self.maxDurationTimer, ^{
+        [weakSelf handleMaxDurationReached];
+    });
+    dispatch_resume(self.maxDurationTimer);
+}
+
+// Stops tracking maximum recording duration
+- (void)stopMaxDurationTracking {
+    if (self.maxDurationTimer) {
+        dispatch_source_cancel(self.maxDurationTimer);
+        self.maxDurationTimer = nil;
+    }
+}
+
+// Pauses maximum duration tracking (for pause/resume functionality)
+- (void)pauseMaxDurationTracking {
+    if (self.maxDurationTimer) {
+        dispatch_source_cancel(self.maxDurationTimer);
+        self.maxDurationTimer = nil;
+    }
+}
+
+// Resumes maximum duration tracking with remaining time
+- (void)resumeMaxDurationTracking {
+    if (self.maxRecordingDuration <= 0) {
+        return; // No limit set
+    }
+    
+    // Calculate elapsed recording time
+    NSTimeInterval currentTime = [NSDate timeIntervalSinceReferenceDate];
+    NSTimeInterval elapsedTime = currentTime - self.recordingStartTime;
+    NSTimeInterval remainingTime = self.maxRecordingDuration - elapsedTime;
+    
+    if (remainingTime <= 0) {
+        // Max duration already reached
+        [self handleMaxDurationReached];
+        return;
+    }
+    
+    // Start timer for remaining time
+    self.maxDurationTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(self.maxDurationTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, remainingTime * NSEC_PER_SEC),
+                              DISPATCH_TIME_FOREVER, // One-time timer
+                              0);
+    
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(self.maxDurationTimer, ^{
+        [weakSelf handleMaxDurationReached];
+    });
+    dispatch_resume(self.maxDurationTimer);
+}
+
+// Handles when maximum recording duration is reached
+- (void)handleMaxDurationReached {
+    if (!self.isRecording) {
+        return;
+    }
+    
+    NSTimeInterval currentTime = [NSDate timeIntervalSinceReferenceDate];
+    NSTimeInterval totalDuration = currentTime - self.recordingStartTime;
+    
+    NSLog(@"AudioChunkRecorder: Max recording duration reached: %.2fs", totalDuration);
+    
+    // Stop recording
+    [self stopRecording:nil rejecter:nil];
+    
+    // Send max duration reached event
+    [self sendEventWithName:@"onMaxDurationReached" body:@{
+        @"duration": @(totalDuration),
+        @"maxDuration": @(self.maxRecordingDuration),
+        @"chunks": @(self.seq) // Number of chunks created
+    }];
+}
+
 #pragma mark - Helpers
 
 // Resets recorder, timer, and audio session
 - (void)resetState {
     if (self.timer) { dispatch_source_cancel(self.timer); self.timer = nil; }
     if (self.levelTimer) { dispatch_source_cancel(self.levelTimer); self.levelTimer = nil; }
+    if (self.maxDurationTimer) { dispatch_source_cancel(self.maxDurationTimer); self.maxDurationTimer = nil; }
     if (self.recorder.isRecording) { [self.recorder stop]; }
     self.recorder = nil;
     self.isPaused = NO;
     self.interruptionEventSent = NO; // Reset interruption flag
     self.lastInterruptionEndTime = 0; // Reset interruption flag
+    self.recordingStartTime = 0; // Reset recording start time
     [self removeAudioSessionNotifications];
     [[AVAudioSession sharedInstance] setActive:NO
                                    withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
