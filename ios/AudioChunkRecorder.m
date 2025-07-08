@@ -869,7 +869,7 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     }
     
     // Schedule the next rotation
-    [self scheduleNextRotation];
+    [self scheduleRotation];
 }
 
 @end 
