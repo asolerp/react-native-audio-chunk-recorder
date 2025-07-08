@@ -8,13 +8,18 @@ import { ErrorTracker } from "./providers/errorTracker";
 // These would normally come from the native module
 
 export interface ChunkData {
-  uri: string;
-  path: string;
-  seq: number;
+  path: string; // File system path
+  sequence: number; // Chunk sequence starting from 1
   duration?: number; // Duration in seconds
   timestamp?: number; // When the chunk was created (Unix timestamp)
   size?: number; // File size in bytes
+  isLastChunk?: boolean; // True if this is the final chunk
 }
+
+// Utility function to convert path to URI when needed
+export const getChunkUri = (chunk: ChunkData): string => {
+  return chunk.path.startsWith("file://") ? chunk.path : `file://${chunk.path}`;
+};
 
 export interface RecordingOptions {
   sampleRate?: number; // Default: 16000

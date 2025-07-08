@@ -65,13 +65,20 @@ public class EventEmitter {
      * Send chunk ready event with duration and timing info
      */
     public void sendChunkReadyEvent(String path, int sequence, double duration, long timestamp, long fileSize) {
+        sendChunkReadyEvent(path, sequence, duration, timestamp, fileSize, false);
+    }
+
+    /**
+     * Send chunk ready event with duration and timing info and last chunk flag
+     */
+    public void sendChunkReadyEvent(String path, int sequence, double duration, long timestamp, long fileSize, boolean isLastChunk) {
         WritableMap map = Arguments.createMap();
-        map.putString("uri", path);
         map.putString("path", path);
-        map.putInt("seq", sequence);
+        map.putInt("sequence", sequence);
         map.putDouble("duration", duration);
         map.putDouble("timestamp", timestamp);
         map.putDouble("size", fileSize);
+        map.putBoolean("isLastChunk", isLastChunk);
         sendEvent("onChunkReady", map);
     }
 

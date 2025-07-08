@@ -17,6 +17,7 @@ import type {
   MaxDurationReachedData,
   ErrorData,
 } from "../src/types";
+import { getChunkUri } from "../src/types";
 
 /**
  * Example showing how to integrate error tracking with the audio recorder
@@ -159,7 +160,9 @@ export default function DurationTrackingExample() {
       sampleRate: 16000,
     },
     onChunkReady: (chunk) => {
-      console.log(`✅ Chunk ${chunk.seq} ready:`, {
+      console.log(`✅ Chunk ${chunk.sequence} ready:`, {
+        path: chunk.path,
+        uri: getChunkUri(chunk),
         duration: chunk.duration,
         size: chunk.size,
         timestamp: new Date(chunk.timestamp || 0).toLocaleTimeString(),
@@ -235,6 +238,32 @@ export default function DurationTrackingExample() {
   };
 
   const stats = getChunkStats();
+
+  const playChunk = useCallback((chunk: ChunkData) => {
+    const uri = getChunkUri(chunk);
+    console.log(`Playing chunk ${chunk.sequence} from URI: ${uri}`);
+
+    Alert.alert(
+      "Play Chunk",
+      `Would play chunk ${chunk.sequence}\nPath: ${chunk.path}\nURI: ${uri}`
+    );
+  }, []);
+
+  const deleteChunk = useCallback((chunkToDelete: ChunkData) => {
+    Alert.alert("Delete Chunk", `Delete chunk ${chunkToDelete.sequence}?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          setChunks((prev) =>
+            prev.filter((c) => c.sequence !== chunkToDelete.sequence)
+          );
+          console.log(`Deleted chunk ${chunkToDelete.sequence}`);
+        },
+      },
+    ]);
+  }, []);
 
   return (
     <ScrollView style={styles.container}>
@@ -357,38 +386,32 @@ export default function DurationTrackingExample() {
       </View>
 
       {/* Chunks List */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>
-          📁 Chunks Creados ({chunks.length})
-        </Text>
-        {chunks.length === 0 ? (
-          <Text style={styles.emptyText}>No hay chunks disponibles</Text>
-        ) : (
-          chunks.map((chunk, index) => (
-            <View key={chunk.seq} style={styles.chunkItem}>
-              <View style={styles.chunkHeader}>
-                <Text style={styles.chunkTitle}>Chunk #{chunk.seq}</Text>
-                <Text style={styles.chunkDuration}>
-                  {formatDuration(chunk.duration || 0)}
-                </Text>
-              </View>
-              <View style={styles.chunkDetails}>
-                <Text style={styles.chunkDetail}>
-                  📏 Tamaño: {formatBytes(chunk.size || 0)}
-                </Text>
-                <Text style={styles.chunkDetail}>
-                  🕒 Creado:{" "}
-                  {chunk.timestamp
-                    ? new Date(chunk.timestamp).toLocaleTimeString()
-                    : "N/A"}
-                </Text>
-                <Text style={styles.chunkDetail}>
-                  📂 Archivo: {chunk.path.split("/").pop() || "N/A"}
-                </Text>
-              </View>
+      <View style={styles.chunksContainer}>
+        <Text style={styles.chunksTitle}>Chunks ({chunks.length}):</Text>
+        {chunks.map((chunk) => (
+          <View key={chunk.sequence} style={styles.chunkItem}>
+            <Text style={styles.chunkText}>
+              #{chunk.sequence} - {chunk.duration?.toFixed(1)}s - {chunk.size}{" "}
+              bytes
+              {chunk.isLastChunk && (
+                <Text style={styles.lastChunkText}> (LAST)</Text>
+              )}
+            </Text>
+            <Text style={styles.chunkDetails}>
+              Created:{" "}
+              {chunk.timestamp
+                ? new Date(chunk.timestamp).toLocaleTimeString()
+                : "N/A"}
+            </Text>
+            <Text style={styles.chunkDetails}>
+              Path: {chunk.path.split("/").pop()}
+            </Text>
+            <View style={styles.chunkActions}>
+              <Button title="Play" onPress={() => playChunk(chunk)} />
+              <Button title="Delete" onPress={() => deleteChunk(chunk)} />
             </View>
-          ))
-        )}
+          </View>
+        ))}
       </View>
 
       {/* Audio Level */}
@@ -563,5 +586,29 @@ const styles = StyleSheet.create({
     color: "#f44336",
     fontSize: 14,
     marginBottom: 5,
+  },
+  chunksContainer: {
+    margin: 10,
+  },
+  chunksTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 10,
+    color: "#333",
+  },
+  chunkText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#333",
+  },
+  lastChunkText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#4CAF50",
+  },
+  chunkActions: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    marginTop: 5,
   },
 });

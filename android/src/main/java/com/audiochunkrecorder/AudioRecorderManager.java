@@ -99,8 +99,8 @@ public class AudioRecorderManager {
         Log.d(TAG, "Stopping recording...");
 
         try {
-            // 1) Finalize current chunk (even if we were paused)
-            finishCurrentChunk();
+            // 1) Finalize current chunk (even if we were paused) and mark as last chunk
+            finishCurrentChunk(true);
 
             // 2) Mark recording as stopped and stop capture loop
             isRecording = false;
@@ -219,7 +219,7 @@ public class AudioRecorderManager {
      * Reset chunk index (used when clearing files)
      */
     public void resetChunkIndex() {
-        currentChunkIndex.set(0);
+        currentChunkIndex.set(1);
     }
 
     /**
@@ -314,6 +314,11 @@ public class AudioRecorderManager {
         
         if (bufferSize == AudioRecord.ERROR_BAD_VALUE) {
             throw new Exception("Invalid audio configuration");
+        }
+        
+        // Initialize chunk index to 1 if this is the first chunk
+        if (currentChunkIndex.get() == 0) {
+            currentChunkIndex.set(1);
         }
         
         audioRecord = new AudioRecord(
@@ -492,6 +497,10 @@ public class AudioRecorderManager {
     }
 
     private void finishCurrentChunk() {
+        finishCurrentChunk(false);
+    }
+
+    private void finishCurrentChunk(boolean isLastChunk) {
         if (audioRecord != null && isRecording) {
             // Stop only if still in RECORDING state to avoid IllegalStateException
             if (audioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
@@ -527,13 +536,14 @@ public class AudioRecorderManager {
                     // Get file size
                     long fileSize = file.length();
                     
-                    // Send chunk ready event with duration info
+                    // Send chunk ready event with sequence and last chunk flag
                     eventEmitter.sendChunkReadyEvent(
                         file.getAbsolutePath(), 
                         currentChunkIndex.get(), 
                         actualDuration,
                         currentChunkStartTime,
-                        fileSize
+                        fileSize,
+                        isLastChunk
                     );
                     
                     currentChunkIndex.incrementAndGet();

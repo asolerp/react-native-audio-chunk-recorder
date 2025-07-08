@@ -5,39 +5,106 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { View, Text, Button, StyleSheet, Alert, Platform } from "react-native";
 import { useAudioRecorderCore } from "../src/hooks/useAudioRecorderCore";
-import type { ChunkData, MaxDurationReachedData } from "../src/types";
+import type {
+  ChunkData,
+  MaxDurationReachedData,
+  AudioLevelData,
+  ErrorData,
+} from "../src/types";
+import { getChunkUri } from "../src/types";
 
 export default function BasicUsage() {
   const [chunks, setChunks] = useState<ChunkData[]>([]);
+  const [audioLevel, setAudioLevel] = useState<number>(0);
+
+  // Chunk handling
+  const handleChunkReady = useCallback((chunk: ChunkData) => {
+    console.log("New chunk ready:", chunk);
+    setChunks((prev) => [...prev, chunk]);
+
+    // Show last chunk indicator
+    if (chunk.isLastChunk) {
+      Alert.alert("Recording Complete", "Final chunk received!");
+    }
+  }, []);
+
+  // Audio level monitoring
+  const handleAudioLevel = useCallback((levelData: AudioLevelData) => {
+    setAudioLevel(levelData.level);
+  }, []);
+
+  // Error handling
+  const handleError = useCallback((error: ErrorData) => {
+    console.error("Recording error:", error);
+    Alert.alert("Error", error.message);
+  }, []);
+
+  // Max duration reached
+  const handleMaxDurationReached = useCallback(
+    (data: MaxDurationReachedData) => {
+      console.log("Max duration reached:", data);
+      Alert.alert(
+        "Recording Limit Reached",
+        `Recording stopped after ${Math.round(data.duration)}s (max: ${
+          data.maxDuration
+        }s)`
+      );
+    },
+    []
+  );
 
   const recorder = useAudioRecorderCore({
     defaultRecordingOptions: {
-      chunkSeconds: 10, // 10 second chunks
-      maxRecordingDuration: 120, // 2 minutes max
-      sampleRate: 16000, // Works on both iOS and Android
-      bitRate: 64000, // Works on both iOS and Android
+      chunkSeconds: 5, // 5 seconds per chunk
+      maxRecordingDuration: 60, // 1 minute max for demo
+      sampleRate: 16000,
+      bitRate: 128000,
     },
-    onChunkReady: (chunk) => {
-      console.log(`✅ [${Platform.OS}] Chunk ${chunk.seq} ready:`, {
-        duration: chunk.duration,
-        size: chunk.size,
-        timestamp: chunk.timestamp
-          ? new Date(chunk.timestamp).toLocaleTimeString()
-          : "N/A",
-      });
-      setChunks((prev) => [...prev, chunk]);
-    },
-    onMaxDurationReached: (data: MaxDurationReachedData) => {
-      Alert.alert(
-        "⏰ Límite de tiempo alcanzado",
-        `Grabación detenida automáticamente después de ${data.duration.toFixed(
-          1
-        )} segundos.\n\n` +
-          `Plataforma: ${Platform.OS}\n` +
-          `Chunks creados: ${data.chunks.length || chunks.length}`
-      );
-    },
+    onChunkReady: handleChunkReady,
+    onMaxDurationReached: handleMaxDurationReached,
   });
+
+  // Subscribe to events
+  useEffect(() => {
+    const unsubscribeAudioLevel = recorder.onAudioLevel(handleAudioLevel);
+    const unsubscribeError = recorder.onError(handleError);
+
+    return () => {
+      unsubscribeAudioLevel();
+      unsubscribeError();
+    };
+  }, [recorder, handleAudioLevel, handleError]);
+
+  const playChunk = useCallback((chunk: ChunkData) => {
+    const uri = getChunkUri(chunk);
+    console.log(`Playing chunk ${chunk.sequence} from URI: ${uri}`);
+
+    // Here you would use an audio player library like react-native-sound
+    // or expo-av to play the audio file
+    Alert.alert(
+      "Play Chunk",
+      `Would play chunk ${chunk.sequence}\nPath: ${chunk.path}\nURI: ${uri}`
+    );
+  }, []);
+
+  const deleteChunk = useCallback((chunkToDelete: ChunkData) => {
+    Alert.alert("Delete Chunk", `Delete chunk ${chunkToDelete.sequence}?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          // Remove from local state
+          setChunks((prev) =>
+            prev.filter((c) => c.sequence !== chunkToDelete.sequence)
+          );
+
+          // Here you would also delete the actual file
+          console.log(`Deleted chunk ${chunkToDelete.sequence}`);
+        },
+      },
+    ]);
+  }, []);
 
   const formatDuration = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
@@ -81,112 +148,106 @@ export default function BasicUsage() {
       {/* Recording Status */}
       <View style={styles.statusContainer}>
         <Text style={styles.statusText}>
-          Estado:{" "}
+          Status:{" "}
           {recorder.isRecording
             ? recorder.isPaused
-              ? "⏸️ Pausado"
-              : "🔴 Grabando"
-            : "⏹️ Detenido"}
+              ? "Paused"
+              : "Recording"
+            : "Stopped"}
         </Text>
         <Text style={styles.statusText}>
-          Duración actual: {formatDuration(recorder.recordingDuration)}
+          Permission: {recorder.hasPermission ? "Granted" : "Denied"}
         </Text>
         <Text style={styles.statusText}>
-          Tiempo restante: {formatDuration(recorder.remainingDuration)}
-        </Text>
-        <Text style={styles.statusText}>
-          Duración esperada por chunk: {recorder.getExpectedChunkDuration()}s
-        </Text>
-        <Text style={styles.statusText}>
-          Duración máxima: {formatDuration(recorder.maxRecordingDuration)}
+          Available: {recorder.isAvailable ? "Yes" : "No"}
         </Text>
       </View>
 
-      {/* Controls */}
-      <View style={styles.controlsContainer}>
-        <Button
-          title={recorder.isRecording ? "⏹️ Detener" : "▶️ Iniciar"}
-          onPress={
-            recorder.isRecording ? handleStopRecording : handleStartRecording
-          }
-          disabled={!recorder.isAvailable || !recorder.hasPermission}
-          color={recorder.isRecording ? "#f44336" : "#4CAF50"}
-        />
-
-        {recorder.isRecording && (
-          <Button
-            title={recorder.isPaused ? "▶️ Reanudar" : "⏸️ Pausar"}
-            onPress={
-              recorder.isPaused
-                ? recorder.resumeRecording
-                : recorder.pauseRecording
-            }
-            color="#FF9800"
+      {/* Duration Display */}
+      <View style={styles.durationContainer}>
+        <Text style={styles.durationText}>
+          Duration: {Math.round(recorder.recordingDuration)}s /{" "}
+          {recorder.maxRecordingDuration}s
+        </Text>
+        <Text style={styles.durationText}>
+          Remaining: {Math.round(recorder.remainingDuration)}s
+        </Text>
+        <View style={styles.progressBar}>
+          <View
+            style={[
+              styles.progressFill,
+              {
+                width: `${
+                  (recorder.recordingDuration / recorder.maxRecordingDuration) *
+                  100
+                }%`,
+              },
+            ]}
           />
-        )}
-
-        <Button
-          title="🗑️ Limpiar chunks"
-          onPress={() => {
-            recorder.clearChunks();
-            setChunks([]);
-          }}
-          disabled={recorder.isRecording}
-          color="#9E9E9E"
-        />
-      </View>
-
-      {/* Chunks Information */}
-      <View style={styles.chunksContainer}>
-        <Text style={styles.chunksTitle}>
-          📁 Chunks creados: {chunks.length}
-        </Text>
-        <Text style={styles.chunksTitle}>
-          ⏱️ Duración total grabada:{" "}
-          {formatDuration(getTotalRecordedDuration())}
-        </Text>
-
-        {chunks.map((chunk, index) => {
-          const chunkInfo = getChunkInfo(index);
-          return (
-            <View key={chunk.seq} style={styles.chunkItem}>
-              <Text style={styles.chunkText}>
-                Chunk #{chunk.seq}: {formatDuration(chunkInfo?.duration || 0)}
-              </Text>
-              <Text style={styles.chunkDetails}>
-                📏 Tamaño: {((chunkInfo?.size || 0) / 1024).toFixed(1)} KB
-              </Text>
-              <Text style={styles.chunkDetails}>
-                🕒 Creado: {chunkInfo?.timestamp || "N/A"}
-              </Text>
-              <Text style={styles.chunkDetails}>
-                📂 Archivo:{" "}
-                {Platform.OS === "ios"
-                  ? chunk.path.split("/").pop()
-                  : chunk.path.split("/").pop() || "N/A"}
-              </Text>
-            </View>
-          );
-        })}
+        </View>
       </View>
 
       {/* Audio Level */}
       <View style={styles.audioLevelContainer}>
         <Text style={styles.audioLevelText}>
-          🎵 Nivel de audio: {(recorder.audioLevel * 100).toFixed(1)}%{" "}
-          {recorder.hasAudio ? "🔊" : "🔇"}
+          Audio Level: {Math.round(audioLevel * 100)}%
         </Text>
         <View style={styles.audioLevelBar}>
           <View
-            style={[
-              styles.audioLevelFill,
-              {
-                width: `${recorder.audioLevel * 100}%`,
-                backgroundColor: recorder.hasAudio ? "#4CAF50" : "#FFC107",
-              },
-            ]}
+            style={[styles.audioLevelFill, { width: `${audioLevel * 100}%` }]}
           />
         </View>
+      </View>
+
+      {/* Controls */}
+      <View style={styles.controlsContainer}>
+        <Button
+          title="Start Recording"
+          onPress={() => recorder.startRecording()}
+          disabled={recorder.isRecording}
+        />
+        <Button
+          title={recorder.isPaused ? "Resume" : "Pause"}
+          onPress={() =>
+            recorder.isPaused
+              ? recorder.resumeRecording()
+              : recorder.pauseRecording()
+          }
+          disabled={!recorder.isRecording}
+        />
+        <Button
+          title="Stop Recording"
+          onPress={() => recorder.stopRecording()}
+          disabled={!recorder.isRecording}
+        />
+        <Button
+          title="Clear Chunks"
+          onPress={() => {
+            setChunks([]);
+            recorder.clearChunks();
+          }}
+          disabled={chunks.length === 0}
+        />
+      </View>
+
+      {/* Chunks List */}
+      <View style={styles.chunksContainer}>
+        <Text style={styles.chunksTitle}>Chunks ({chunks.length}):</Text>
+        {chunks.map((chunk) => (
+          <View key={chunk.sequence} style={styles.chunkItem}>
+            <Text style={styles.chunkText}>
+              #{chunk.sequence} - {chunk.duration?.toFixed(1)}s - {chunk.size}{" "}
+              bytes
+              {chunk.isLastChunk && (
+                <Text style={styles.lastChunkText}> (LAST)</Text>
+              )}
+            </Text>
+            <View style={styles.chunkActions}>
+              <Button title="Play" onPress={() => playChunk(chunk)} />
+              <Button title="Delete" onPress={() => deleteChunk(chunk)} />
+            </View>
+          </View>
+        ))}
       </View>
 
       {/* Platform Info */}
@@ -200,6 +261,14 @@ export default function BasicUsage() {
         <Text style={styles.featureText}>✅ Tamaño de archivos</Text>
         <Text style={styles.featureText}>✅ Seguimiento en tiempo real</Text>
         <Text style={styles.featureText}>✅ Manejo de interrupciones</Text>
+
+        <Text style={styles.platformText}>📁 Formato de archivos:</Text>
+        <Text style={styles.featureText}>
+          • path: Para operaciones del sistema
+        </Text>
+        <Text style={styles.featureText}>
+          • getChunkUri(): Para reproducir audio
+        </Text>
       </View>
     </View>
   );
@@ -324,5 +393,42 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#2e7d32",
     marginBottom: 4,
+  },
+  durationContainer: {
+    backgroundColor: "#fff",
+    padding: 15,
+    borderRadius: 8,
+    marginBottom: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  durationText: {
+    fontSize: 16,
+    marginBottom: 5,
+    color: "#333",
+  },
+  progressBar: {
+    height: 12,
+    backgroundColor: "#e0e0e0",
+    borderRadius: 6,
+    marginBottom: 10,
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: 6,
+    backgroundColor: "#4CAF50",
+  },
+  chunkActions: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  lastChunkText: {
+    fontSize: 14,
+    color: "#666",
+    fontWeight: "bold",
   },
 });

@@ -61,7 +61,7 @@ RCT_EXPORT_METHOD(startRecording:(NSDictionary *)options
     self.bitRate      = [options[@"bitRate"] integerValue]     ?: kDefaultBitRate;
     self.chunkSeconds = [options[@"chunkSeconds"] integerValue] ?: kDefaultChunkSecs;
     self.maxRecordingDuration = [options[@"maxRecordingDuration"] doubleValue] ?: 7200.0; // Default 2 hours
-    self.seq = 0;
+    self.seq = 1; // Start from 1 instead of 0
     self.isPaused = NO;
     self.interruptionEventSent = NO; // Reset for new recording session
     self.lastInterruptionEndTime = 0; // Reset for new recording session
@@ -112,7 +112,7 @@ RCT_EXPORT_METHOD(stopRecording:(RCTPromiseResolveBlock)resolve
     [self removeAudioSessionNotifications];
     [self stopAudioLevelMonitoring];
     [self stopMaxDurationTracking]; // Stop max duration tracking
-    [self finishCurrentChunk];
+    [self finishCurrentChunk:YES]; // Mark as last chunk
     [self resetState];
     
     resolve(@"Recording stopped");
@@ -329,7 +329,6 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
 
 // Initializes and starts AVAudioRecorder
 - (BOOL)beginRecording:(NSError **)outError {
-    self.seq += 1;
     NSURL *fileURL = [self nextFileURL];
     self.currentFilePath = fileURL.path;
     
@@ -394,6 +393,10 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
 
 // Stops recorder, verifies file, and emits event with file info
 - (void)finishCurrentChunk {
+    [self finishCurrentChunk:NO];
+}
+
+- (void)finishCurrentChunk:(BOOL)isLastChunk {
     if (self.recorder) {
         [self.recorder stop];
     }
@@ -412,7 +415,7 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     NSTimeInterval chunkEndTime = [NSDate timeIntervalSinceReferenceDate];
     NSTimeInterval actualDuration = self.accumulatedRecordingTime + (chunkEndTime - self.chunkStartTime);
     
-    NSLog(@"AudioChunkRecorder: Finishing chunk %ld at path: %@, duration: %.2fs", (long)chunkSeq, filePath, actualDuration);
+    NSLog(@"AudioChunkRecorder: Finishing chunk %ld at path: %@, duration: %.2fs, isLast: %@", (long)chunkSeq, filePath, actualDuration, isLastChunk ? @"YES" : @"NO");
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         NSFileManager *fm = [NSFileManager defaultManager];
@@ -421,18 +424,18 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
             NSNumber *size = attributes[NSFileSize];
             NSLog(@"AudioChunkRecorder: File exists, size: %@ bytes", size);
             if (size.unsignedLongLongValue > 0) {
-                NSLog(@"AudioChunkRecorder: 🎯 EMITTING CHUNK TO FRONTEND - seq: %ld, path: %@, size: %@ bytes, duration: %.2fs", (long)chunkSeq, filePath, size, actualDuration);
+                NSLog(@"AudioChunkRecorder: 🎯 EMITTING CHUNK TO FRONTEND - seq: %ld, path: %@, size: %@ bytes, duration: %.2fs, isLast: %@", (long)chunkSeq, filePath, size, actualDuration, isLastChunk ? @"YES" : @"NO");
                 
                 // Convert timestamp to milliseconds (Unix timestamp)
                 NSTimeInterval timestampMs = chunkStartTimestamp * 1000;
                 
                 NSDictionary *chunkData = @{
-                    @"uri": [NSURL fileURLWithPath:filePath].absoluteString,
                     @"path": filePath,
-                    @"seq": @(chunkSeq),
+                    @"sequence": @(chunkSeq),
                     @"duration": @(actualDuration),
                     @"timestamp": @(timestampMs),
-                    @"size": size
+                    @"size": size,
+                    @"isLastChunk": @(isLastChunk)
                 };
                 
                 NSLog(@"AudioChunkRecorder: 📤 Event data: %@", chunkData);
@@ -777,20 +780,30 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
         return;
     }
     
-    NSTimeInterval currentTime = [NSDate timeIntervalSinceReferenceDate];
-    NSTimeInterval totalDuration = currentTime - self.recordingStartTime;
-    
-    NSLog(@"AudioChunkRecorder: Max recording duration reached: %.2fs", totalDuration);
+    NSLog(@"AudioChunkRecorder: Max duration reached, stopping recording");
     
     // Stop recording
-    [self stopRecording:nil rejecter:nil];
+    self.isRecording = NO;
+    [self emitStateChange];
     
-    // Send max duration reached event
-    [self sendEventWithName:@"onMaxDurationReached" body:@{
+    // Clean up
+    [self removeAudioSessionNotifications];
+    [self stopAudioLevelMonitoring];
+    [self stopMaxDurationTracking];
+    [self finishCurrentChunk:YES]; // Mark as last chunk
+    
+    // Calculate total recording duration
+    NSTimeInterval totalDuration = [NSDate timeIntervalSinceReferenceDate] - self.recordingStartTime;
+    
+    // Emit max duration reached event
+    NSDictionary *maxDurationData = @{
         @"duration": @(totalDuration),
-        @"maxDuration": @(self.maxRecordingDuration),
-        @"chunks": @(self.seq) // Number of chunks created
-    }];
+        @"maxDuration": @(self.maxRecordingDuration)
+    };
+    
+    [self sendEventWithName:@"onMaxDurationReached" body:maxDurationData];
+    
+    [self resetState];
 }
 
 #pragma mark - Helpers
@@ -831,6 +844,32 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
                                          code:code
                                      userInfo:@{NSLocalizedDescriptionKey: message}];
     [self emitError:error];
+}
+
+// Rotates to a new chunk by finishing the current one and starting a new one
+- (void)rotateChunk {
+    if (!self.isRecording) { 
+        return; 
+    }
+    
+    NSLog(@"AudioChunkRecorder: Rotating to new chunk");
+    
+    // First, finish the current chunk
+    [self finishCurrentChunk:NO]; // Not the last chunk
+    
+    // Increment sequence number for the next chunk
+    self.seq += 1;
+    
+    // Then start a new chunk
+    NSError *error = nil;
+    if (![self beginRecording:&error]) {
+        NSLog(@"AudioChunkRecorder: Failed to start new chunk: %@", error.localizedDescription);
+        [self emitErrorWithCode:1009 message:@"Failed to start new chunk"];
+        return;
+    }
+    
+    // Schedule the next rotation
+    [self scheduleNextRotation];
 }
 
 @end 
