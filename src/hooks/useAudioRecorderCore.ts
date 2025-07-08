@@ -116,10 +116,10 @@ class EventListenerManager {
             errorTracker.captureException(error, {
               chunk: chunk,
               action: "chunk_upload",
-              chunkSeq: chunk.seq,
+              chunkSeq: chunk.sequence,
             });
             options.chunkUploader?.onError?.(
-              chunk.seq.toString(),
+              chunk.sequence.toString(),
               error.message || "Upload failed"
             );
           });
