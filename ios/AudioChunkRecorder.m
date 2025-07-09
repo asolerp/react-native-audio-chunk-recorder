@@ -465,6 +465,9 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     [self finishCurrentChunk];
     
     if (self.isRecording) {
+      
+        self.seq += 1;
+        
         NSError *error;
         if (![self beginRecording:&error]) {
             [self emitError:error];
