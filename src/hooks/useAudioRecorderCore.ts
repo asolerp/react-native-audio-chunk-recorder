@@ -402,6 +402,7 @@ export const useAudioRecorderCore = (
         });
 
         const result = await audioManager.startRecording(finalOptions);
+        console.log("AudioRecorderCore: ✅ Recording started:", result);
 
         // Start duration tracking
         recordingStartTimeRef.current = Date.now();
@@ -432,7 +433,8 @@ export const useAudioRecorderCore = (
         level: "info",
       });
 
-      await audioManager.stopRecording();
+      const result = await audioManager.stopRecording();
+      console.log("AudioRecorderCore: ✅ Recording stopped:", result);
     } catch (error) {
       console.error("AudioRecorderCore: Stop recording failed:", error);
       errorTracker.captureException(error as Error, {
@@ -512,6 +514,8 @@ export const useAudioRecorderCore = (
         category: "permissions",
         level: granted ? "info" : "warning",
       });
+
+      console.log("AudioRecorderCore: ✅ Permissions check:", granted);
     } catch (error) {
       console.error("AudioRecorderCore: Check permissions failed:", error);
       errorTracker.captureException(error as Error, {

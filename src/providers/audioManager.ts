@@ -18,9 +18,10 @@ class AudioManager {
   private isMonitoring = false;
   private listeners = new Set<AudioManagerListener>();
   private nativeService: any = null;
+  private initializationPromise: Promise<void>;
 
   private constructor() {
-    this.initializeNativeService();
+    this.initializationPromise = this.initializeNativeService();
   }
 
   static getInstance(): AudioManager {
@@ -30,7 +31,7 @@ class AudioManager {
     return AudioManager.instance;
   }
 
-  private async initializeNativeService() {
+  private async initializeNativeService(): Promise<void> {
     try {
       this.nativeService = NativeAudioChunkRecorder;
       const isAvailable = await this.nativeService.isAvailable();
@@ -45,15 +46,20 @@ class AudioManager {
     }
   }
 
+  private async ensureInitialized(): Promise<void> {
+    await this.initializationPromise;
+    if (!this.nativeService) {
+      throw new Error("AudioManager: Native service not available");
+    }
+  }
+
   /**
    * Start recording - will stop monitoring if active
    */
   async startRecording(options?: any): Promise<string> {
     console.log("AudioManager: 🚀 startRecording called");
 
-    if (!this.nativeService) {
-      throw new Error("AudioManager: Native service not available");
-    }
+    await this.ensureInitialized();
 
     if (this.isRecording) {
       console.log("AudioManager: ⚠️ Already recording, skipping start request");
@@ -86,9 +92,7 @@ class AudioManager {
   async startMonitoring(options?: any): Promise<string> {
     console.log("AudioManager: 🚀 startMonitoring called");
 
-    if (!this.nativeService) {
-      throw new Error("AudioManager: Native service not available");
-    }
+    await this.ensureInitialized();
 
     if (this.isMonitoring) {
       console.log(
@@ -122,9 +126,7 @@ class AudioManager {
   async stopRecording(): Promise<string> {
     console.log("AudioManager: 🛑 stopRecording called");
 
-    if (!this.nativeService) {
-      throw new Error("AudioManager: Native service not available");
-    }
+    await this.ensureInitialized();
 
     if (!this.isRecording) {
       console.log("AudioManager: ⚠️ Not recording, skipping stop request");
@@ -149,9 +151,7 @@ class AudioManager {
   async stopMonitoring(): Promise<string> {
     console.log("AudioManager: 🛑 stopMonitoring called");
 
-    if (!this.nativeService) {
-      throw new Error("AudioManager: Native service not available");
-    }
+    await this.ensureInitialized();
 
     if (!this.isMonitoring) {
       console.log("AudioManager: ⚠️ Not monitoring, skipping stop request");
