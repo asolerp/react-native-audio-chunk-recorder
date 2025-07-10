@@ -97,7 +97,8 @@ class EventListenerManager {
     stateManager: any,
     alertProvider: any,
     errorTracker: any,
-    updateState: (updates: any) => void
+    updateState: (updates: any) => void,
+    updateAudioLevel: (level: number, hasAudio: boolean) => void
   ) {
     // Clear existing listeners
     this.cleanup();
@@ -131,8 +132,8 @@ class EventListenerManager {
     const levelListener = AudioChunkRecorderEventEmitter.addListener(
       "onAudioLevel",
       (data: AudioLevelData) => {
-        // Update state directly for audio level
-        updateState({ audioLevel: data.level, hasAudio: data.hasAudio });
+        // Update audio level using optimized function to prevent main state rerenders
+        updateAudioLevel(data.level, data.hasAudio);
         this.notifyListeners("onAudioLevel", data);
       }
     );
@@ -272,19 +273,21 @@ export const useAudioRecorderCore = (
     [options.errorTracker]
   );
 
-  // Local state with optimized updates
+  // Optimized state management - separate frequently changing values
   const [state, setState] = useState({
     isRecording: false,
     isPaused: false,
     hasPermission: false,
     chunks: [] as ChunkData[],
-    audioLevel: 0,
-    hasAudio: false,
     isAvailable: false,
     isInterrupted: false,
     recordingDuration: 0,
     maxRecordingDuration: 7200, // 2 hours default
   });
+
+  // Separate state for frequently changing values to prevent rerenders
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [hasAudio, setHasAudio] = useState(false);
 
   // Recording duration tracking
   const recordingStartTimeRef = useRef<number | null>(null);
@@ -303,9 +306,27 @@ export const useAudioRecorderCore = (
   // Auto start tracking
   const autoStartAttemptedRef = useRef(false);
 
+  // Refs for frequently accessed values to prevent unnecessary effect re-runs
+  const chunksRef = useRef<ChunkData[]>([]);
+  const isRecordingRef = useRef(false);
+  const isPausedRef = useRef(false);
+
+  // Update refs when state changes
+  useEffect(() => {
+    chunksRef.current = state.chunks;
+    isRecordingRef.current = state.isRecording;
+    isPausedRef.current = state.isPaused;
+  }, [state.chunks, state.isRecording, state.isPaused]);
+
   // Memoized state setters to prevent unnecessary re-renders
   const updateState = useCallback((updates: Partial<typeof state>) => {
     setState((prev) => ({ ...prev, ...updates }));
+  }, []);
+
+  // Optimized audio level update - doesn't trigger main state updates
+  const updateAudioLevel = useCallback((level: number, hasAudio: boolean) => {
+    setAudioLevel(level);
+    setHasAudio(hasAudio);
   }, []);
 
   // Initialize service - only once
@@ -314,20 +335,20 @@ export const useAudioRecorderCore = (
       serviceRef.current = NativeAudioChunkRecorder;
       NativeAudioChunkRecorder.isAvailable()
         .then((available) => {
-          setState((prev) => ({ ...prev, isAvailable: available }));
+          updateState({ isAvailable: available });
         })
         .catch((error) => {
           console.error(
             "AudioRecorderCore: Failed to check availability:",
             error
           );
-          setState((prev) => ({ ...prev, isAvailable: false }));
+          updateState({ isAvailable: false });
         });
     } catch (error) {
       console.error("AudioRecorderCore: Failed to initialize service:", error);
-      setState((prev) => ({ ...prev, isAvailable: false }));
+      updateState({ isAvailable: false });
     }
-  }, []); // Empty dependency array - only run once
+  }, [updateState]); // Add updateState to dependencies
 
   // Setup native event listeners - optimized dependencies
   useEffect(() => {
@@ -338,7 +359,8 @@ export const useAudioRecorderCore = (
       stateManager,
       alertProvider,
       errorTracker,
-      updateState
+      updateState,
+      updateAudioLevel
     );
 
     return () => {
@@ -352,7 +374,8 @@ export const useAudioRecorderCore = (
     options.chunkUploader,
     options.interruptionHandler,
     updateState,
-  ]); // Add updateState to dependencies
+    updateAudioLevel,
+  ]); // Add updateState and updateAudioLevel to dependencies
 
   // Memoized actions to prevent unnecessary re-creation
   const startRecording = useCallback(
@@ -597,15 +620,15 @@ export const useAudioRecorderCore = (
     }
   }, [options.autoCheckPermissions, checkPermissions]);
 
-  // Start duration tracking when recording starts
+  // Optimized duration tracking using refs to avoid unnecessary re-renders
   useEffect(() => {
-    if (state.isRecording && !state.isPaused && recordingStartTimeRef.current) {
+    if (isRecordingRef.current && !isPausedRef.current) {
       if (durationIntervalRef.current) {
         clearInterval(durationIntervalRef.current);
       }
 
       durationIntervalRef.current = setInterval(() => {
-        if (recordingStartTimeRef.current && !state.isPaused) {
+        if (recordingStartTimeRef.current && !isPausedRef.current) {
           const elapsed =
             (Date.now() -
               recordingStartTimeRef.current -
@@ -624,7 +647,7 @@ export const useAudioRecorderCore = (
                 const maxDurationData: MaxDurationReachedData = {
                   duration: elapsed,
                   maxDuration: state.maxRecordingDuration,
-                  chunks: state.chunks,
+                  chunks: chunksRef.current,
                 };
 
                 eventManagerRef.current!.notifyListeners(
@@ -649,7 +672,7 @@ export const useAudioRecorderCore = (
           }
         }
       }, 1000);
-    } else if (!state.isRecording && durationIntervalRef.current) {
+    } else if (!isRecordingRef.current && durationIntervalRef.current) {
       // Stop tracking when recording stops
       clearInterval(durationIntervalRef.current);
       durationIntervalRef.current = null;
@@ -668,7 +691,6 @@ export const useAudioRecorderCore = (
     state.isRecording,
     state.isPaused,
     state.maxRecordingDuration,
-    state.chunks,
     updateState,
     stopRecording,
     options.onMaxDurationReached,
@@ -777,30 +799,30 @@ export const useAudioRecorderCore = (
     []
   );
 
-  // Duration utility functions
+  // Duration utility functions with memoization
   const getChunkDuration = useCallback(
     (chunkIndex: number): number => {
-      if (chunkIndex >= 0 && chunkIndex < state.chunks.length) {
-        const chunk = state.chunks[chunkIndex];
+      if (chunkIndex >= 0 && chunkIndex < chunksRef.current.length) {
+        const chunk = chunksRef.current[chunkIndex];
         return chunk.duration || 0;
       }
       return 0;
     },
-    [state.chunks]
+    [] // No dependencies since we use ref
   );
 
   const getTotalChunksDuration = useCallback((): number => {
-    return state.chunks.reduce(
+    return chunksRef.current.reduce(
       (total, chunk) => total + (chunk.duration || 0),
       0
     );
-  }, [state.chunks]);
+  }, []); // No dependencies since we use ref
 
   const getExpectedChunkDuration = useCallback((): number => {
     return options.defaultRecordingOptions?.chunkSeconds || 30;
-  }, [options.defaultRecordingOptions]);
+  }, [options.defaultRecordingOptions?.chunkSeconds]); // Only depend on specific prop
 
-  // Calculate remaining duration
+  // Calculate remaining duration with memoization
   const remainingDuration = useMemo(() => {
     return Math.max(0, state.maxRecordingDuration - state.recordingDuration);
   }, [state.maxRecordingDuration, state.recordingDuration]);
@@ -816,8 +838,8 @@ export const useAudioRecorderCore = (
       isPaused: state.isPaused,
       hasPermission: state.hasPermission,
       chunks: state.chunks,
-      audioLevel: state.audioLevel,
-      hasAudio: state.hasAudio,
+      audioLevel: audioLevel, // Use separated state
+      hasAudio: hasAudio, // Use separated state
       isAvailable: state.isAvailable,
       isInterrupted: state.isInterrupted,
 
@@ -853,8 +875,8 @@ export const useAudioRecorderCore = (
       state.isPaused,
       state.hasPermission,
       state.chunks,
-      state.audioLevel,
-      state.hasAudio,
+      audioLevel, // Use separated state
+      hasAudio, // Use separated state
       state.isAvailable,
       state.isInterrupted,
       state.recordingDuration,

@@ -418,7 +418,8 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     
     NSLog(@"AudioChunkRecorder: Finishing chunk %ld at path: %@, duration: %.2fs, isLast: %@", (long)chunkSeq, filePath, actualDuration, isLastChunk ? @"YES" : @"NO");
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // Process chunk in background queue to avoid blocking main thread
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSFileManager *fm = [NSFileManager defaultManager];
         if ([fm fileExistsAtPath:filePath]) {
             NSDictionary *attributes = [fm attributesOfItemAtPath:filePath error:nil];
@@ -440,15 +441,23 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
                 };
                 
                 NSLog(@"AudioChunkRecorder: 📤 Event data: %@", chunkData);
-                [self sendEventWithName:@"onChunkReady" body:chunkData];
-                NSLog(@"AudioChunkRecorder: ✅ Event sent successfully for chunk %ld", (long)chunkSeq);
+                
+                // Send event from main queue but without delay
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self sendEventWithName:@"onChunkReady" body:chunkData];
+                    NSLog(@"AudioChunkRecorder: ✅ Event sent successfully for chunk %ld", (long)chunkSeq);
+                });
             } else {
                 NSLog(@"AudioChunkRecorder: ❌ File is empty");
-                [self emitErrorWithCode:1007 message:@"Recorded file is empty"];                
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self emitErrorWithCode:1007 message:@"Recorded file is empty"];
+                });
             }
         } else {
             NSLog(@"AudioChunkRecorder: ❌ File does not exist at path: %@", filePath);
-            [self emitErrorWithCode:1008 message:@"Recorded file was not created"];            
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self emitErrorWithCode:1008 message:@"Recorded file was not created"];
+            });
         }
     });
 }
@@ -487,11 +496,11 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
         dispatch_source_cancel(self.levelTimer);
     }
     
-    self.levelTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    self.levelTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
     dispatch_source_set_timer(self.levelTimer,
                               dispatch_time(DISPATCH_TIME_NOW, 0),
-                              0.1 * NSEC_PER_SEC, // Update every 100ms
-                              0.05 * NSEC_PER_SEC); // 50ms leeway
+                              0.2 * NSEC_PER_SEC, // Update every 200ms (reduced frequency)
+                              0.1 * NSEC_PER_SEC); // 100ms leeway
     
     __weak typeof(self) weakSelf = self;
     dispatch_source_set_event_handler(self.levelTimer, ^{
@@ -533,11 +542,14 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     // iOS is more sensitive, so use moderate threshold (25% instead of 35%)
     BOOL hasAudio = normalizedLevel > 0.20; // Reduced from 0.35 to 0.25 for iOS
     
-    [self sendEventWithName:@"onAudioLevel" body:@{
-        @"level": @(normalizedLevel),
-        @"hasAudio": @(hasAudio),
-        @"averagePower": @(averagePower)
-    }];
+    // Send audio level event from main queue
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self sendEventWithName:@"onAudioLevel" body:@{
+            @"level": @(normalizedLevel),
+            @"hasAudio": @(hasAudio),
+            @"averagePower": @(averagePower)
+        }];
+    });
 }
 
 #pragma mark - Audio Session Interruption Handling
