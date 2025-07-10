@@ -83,6 +83,21 @@ public class EventEmitter {
     }
 
     /**
+     * Send chunk event with complete chunk information
+     */
+    public void sendChunkEvent(int chunkIndex, String path, double duration, long timestamp, long size) {
+        WritableMap map = Arguments.createMap();
+        map.putInt("sequence", chunkIndex); // Use "sequence" to match ChunkData interface
+        map.putString("path", path);
+        map.putDouble("duration", duration);
+        map.putDouble("timestamp", timestamp);
+        map.putDouble("size", size);
+        sendEvent("onChunkReady", map);
+        
+        Log.d(TAG, "📤 CHUNK EVENT SENT: sequence=" + chunkIndex + ", path=" + path + ", duration=" + duration + "s, size=" + size);
+    }
+
+    /**
      * Send interruption event
      */
     public void sendInterruptionEvent(WritableMap interruptionData) {

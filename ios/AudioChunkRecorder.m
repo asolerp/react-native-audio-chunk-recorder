@@ -197,6 +197,7 @@ RCT_EXPORT_METHOD(resumeRecording:(RCTPromiseResolveBlock)resolve
                 [self stopRecording:nil rejecter:nil];
                 return;
             }
+            self.seq += 1; // Increment sequence number after successful start
             [self scheduleRotation];
         }
     } else {
@@ -860,9 +861,6 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     // First, finish the current chunk
     [self finishCurrentChunk:NO]; // Not the last chunk
     
-    // Increment sequence number for the next chunk
-    self.seq += 1;
-    
     // Then start a new chunk
     NSError *error = nil;
     if (![self beginRecording:&error]) {
@@ -870,6 +868,9 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
         [self emitErrorWithCode:1009 message:@"Failed to start new chunk"];
         return;
     }
+    
+    // Increment sequence number after successful start
+    self.seq += 1;
     
     // Schedule the next rotation
     [self scheduleRotation];

@@ -319,7 +319,10 @@ public class AudioRecorderManager {
         // Initialize chunk index to 1 if this is the first chunk
         if (currentChunkIndex.get() == 0) {
             currentChunkIndex.set(1);
+            Log.d(TAG, "🚀 FIRST CHUNK: Initialized currentChunkIndex to 1");
         }
+        
+        Log.d(TAG, "📦 STARTING NEW CHUNK: currentChunkIndex=" + currentChunkIndex.get() + ", isAudioLevelMonitoring=" + isAudioLevelMonitoring);
         
         audioRecord = new AudioRecord(
             MediaRecorder.AudioSource.MIC,
@@ -343,6 +346,8 @@ public class AudioRecorderManager {
         if (recordingStartTime == 0) {
             recordingStartTime = currentChunkStartTime;
         }
+        
+        Log.d(TAG, "⏰ CHUNK TIMING: currentChunkStartTime=" + currentChunkStartTime + ", recordingStartTime=" + recordingStartTime);
 
         // Initialize audio data buffer (only for normal recording)
         if (!isAudioLevelMonitoring) {
@@ -355,6 +360,7 @@ public class AudioRecorderManager {
         
         // Only schedule rotation for normal recording
         if (!isAudioLevelMonitoring) {
+            Log.d(TAG, "📅 SCHEDULING ROTATION: chunkDuration=" + chunkDuration + "s for chunk " + currentChunkIndex.get());
             scheduleRotation(chunkDuration);
         }
         
@@ -472,88 +478,114 @@ public class AudioRecorderManager {
         if (chunkTimer != null) chunkTimer.cancel();
         chunkTimer = new Timer();
         long delayMs = (long) (delaySeconds * 1000);
+        Log.d(TAG, "⏰ TIMER SET: Scheduling rotation in " + delayMs + "ms for chunk " + currentChunkIndex.get());
         chunkTimer.schedule(new TimerTask() {
             @Override
             public void run() {
+                Log.d(TAG, "🔄 TIMER FIRED: Starting rotation for chunk " + currentChunkIndex.get());
                 if (isRecording && !isPaused && !isAudioLevelMonitoring) {
-                    finishCurrentChunk();
-                    try {
-                        // Use the same sample rate as the current recording
-                        int currentSampleRate = 16000; // Default fallback
-                        try {
-                            if (audioRecord != null) {
-                                currentSampleRate = audioRecord.getSampleRate();
-                            }
-                        } catch (Exception e) {
-                            Log.w(TAG, "Could not get current sample rate, using default");
-                        }
-                        startNewChunk(currentSampleRate, false);
-                    } catch (Exception e) {
-                        eventEmitter.sendErrorEvent(e.getMessage());
-                    }
+                    // Finish current chunk and start new one
+                    rotateToNextChunk();
+                } else {
+                    Log.d(TAG, "⏸️ TIMER FIRED but not rotating: isRecording=" + isRecording + ", isPaused=" + isPaused + ", isAudioLevelMonitoring=" + isAudioLevelMonitoring);
                 }
             }
         }, delayMs);
+    }
+
+    /**
+     * Rotate to the next chunk - finish current and start new one
+     */
+    private void rotateToNextChunk() {
+        try {
+            Log.d(TAG, "🔄 ROTATING: Finishing chunk " + currentChunkIndex.get() + " and starting next");
+            
+            // 1. Finish current chunk
+            finishCurrentChunk(false);
+            
+            // 2. Start new chunk with same sample rate
+            int currentSampleRate = 16000; // Default fallback
+            try {
+                if (audioRecord != null) {
+                    currentSampleRate = audioRecord.getSampleRate();
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Could not get current sample rate, using default");
+            }
+            
+            startNewChunk(currentSampleRate, false);
+        } catch (Exception e) {
+            Log.e(TAG, "❌ ERROR in rotation: " + e.getMessage());
+            eventEmitter.sendErrorEvent("Failed to rotate chunk: " + e.getMessage());
+        }
     }
 
     private void finishCurrentChunk() {
         finishCurrentChunk(false);
     }
 
-    private void finishCurrentChunk(boolean isLastChunk) {
-        if (audioRecord != null && isRecording) {
-            // Stop only if still in RECORDING state to avoid IllegalStateException
-            if (audioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
-                audioRecord.stop();
-            }
-            
-            // Only save files for normal recording, not for audio level monitoring
-            if (!isAudioLevelMonitoring) {
-                File file = fileManager.createChunkFile(currentChunkIndex.get());
-                
-                // Calculate actual chunk duration
-                long chunkEndTime = System.currentTimeMillis();
-                double actualDuration = (chunkEndTime - currentChunkStartTime) / 1000.0;
-                
-                // Write WAV file with actual audio data
-                try {
-                    byte[] audioData;
-                    synchronized (audioDataLock) {
-                        audioData = audioDataBuffer != null ? audioDataBuffer.toByteArray() : new byte[0];
-                        audioDataBuffer = new ByteArrayOutputStream(); // Reset for next chunk
+    private void finishCurrentChunk(boolean isStoppingRecording) {
+        Log.d(TAG, "🔚 FINISHING CHUNK: currentChunkIndex=" + currentChunkIndex.get() + ", isStoppingRecording=" + isStoppingRecording);
+        
+        if (audioRecord != null) {
+            audioRecord.stop();
+            audioRecord.release();
+            audioRecord = null;
+        }
+        
+        if (chunkTimer != null) {
+            chunkTimer.cancel();
+            chunkTimer = null;
+        }
+        
+        // Calculate chunk duration and size
+        long chunkEndTime = System.currentTimeMillis();
+        double actualChunkDuration = (chunkEndTime - currentChunkStartTime) / 1000.0;
+        long chunkSize = 0;
+        
+        Log.d(TAG, "⏰ CHUNK DURATION: actualChunkDuration=" + actualChunkDuration + "s");
+        
+        // Save the chunk data (only for normal recording)
+        if (!isAudioLevelMonitoring) {
+            synchronized (audioDataLock) {
+                if (audioDataBuffer != null) {
+                    byte[] audioData = audioDataBuffer.toByteArray();
+                    chunkSize = audioData.length;
+                    
+                    Log.d(TAG, "💾 SAVING CHUNK: size=" + chunkSize + " bytes, duration=" + actualChunkDuration + "s");
+                    
+                    // Save to file
+                    String chunkPath = fileManager.saveChunkToFile(audioData, currentChunkIndex.get());
+                    
+                    // ALWAYS emit the chunk event
+                    if (chunkPath != null) {
+                        Log.d(TAG, "✅ EMITTING CHUNK EVENT: chunkIndex=" + currentChunkIndex.get() + ", path=" + chunkPath);
+                        eventEmitter.sendChunkEvent(
+                            currentChunkIndex.get(),
+                            chunkPath,
+                            actualChunkDuration,
+                            currentChunkStartTime,
+                            chunkSize
+                        );
+                    } else {
+                        Log.e(TAG, "❌ FAILED TO SAVE CHUNK: chunkIndex=" + currentChunkIndex.get());
+                        eventEmitter.sendErrorEvent("Failed to save chunk " + currentChunkIndex.get());
                     }
                     
-                    // Get the actual sample rate from the current recording
-                    int actualSampleRate = 16000; // Default fallback
-                    try {
-                        actualSampleRate = audioRecord.getSampleRate();
-                    } catch (Exception e) {
-                        Log.w(TAG, "Could not get sample rate, using default: 16000");
-                    }
-                    
-                    fileManager.writeWavFile(file, audioData, actualSampleRate);
-                    
-                    // Get file size
-                    long fileSize = file.length();
-                    
-                    // Send chunk ready event with sequence and last chunk flag
-                    eventEmitter.sendChunkReadyEvent(
-                        file.getAbsolutePath(), 
-                        currentChunkIndex.get(), 
-                        actualDuration,
-                        currentChunkStartTime,
-                        fileSize,
-                        isLastChunk
-                    );
-                    
-                    currentChunkIndex.incrementAndGet();
-                } catch (IOException e) {
-                    Log.e(TAG, "Error writing WAV file: " + e.getMessage());
-                    eventEmitter.sendErrorEvent("Failed to write WAV file: " + e.getMessage());
+                    // Clean up buffer
+                    audioDataBuffer = null;
+                } else {
+                    Log.w(TAG, "⚠️ NO AUDIO DATA: audioDataBuffer is null for chunk " + currentChunkIndex.get());
                 }
-            } else {
-                Log.d(TAG, "Audio level monitoring mode - skipping file save");
             }
         }
+        
+        // Only increment chunk index if not stopping recording
+        if (!isStoppingRecording) {
+            currentChunkIndex.incrementAndGet();
+            Log.d(TAG, "🔢 INCREMENTED CHUNK INDEX: new currentChunkIndex=" + currentChunkIndex.get());
+        }
+        
+        Log.d(TAG, "🏁 CHUNK FINISHED: chunkIndex=" + (isStoppingRecording ? currentChunkIndex.get() : currentChunkIndex.get() - 1));
     }
 } 
