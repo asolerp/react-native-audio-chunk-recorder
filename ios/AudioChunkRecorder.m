@@ -328,7 +328,7 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
 
 #pragma mark - Recording Lifecycle
 
-// Initializes and starts AVAudioRecorder
+// Initializes and starts AVAudioRecorder with minimal impact on audio level monitoring
 - (BOOL)beginRecording:(NSError **)outError {
     NSURL *fileURL = [self nextFileURL];
     self.currentFilePath = fileURL.path;
@@ -337,8 +337,7 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     self.chunkStartTime = [NSDate timeIntervalSinceReferenceDate];
     self.accumulatedRecordingTime = 0.0;
     
-    // Starting chunk recording
-
+    // Pre-configure settings to minimize setup time
     NSDictionary *settings = @{
         AVFormatIDKey: @(kAudioFormatMPEG4AAC),
         AVSampleRateKey: @(self.sampleRate),
@@ -347,15 +346,30 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
         AVEncoderBitRateKey: @(self.bitRate)
     };
 
-    self.recorder = [[AVAudioRecorder alloc] initWithURL:fileURL
-                                                settings:settings
-                                                   error:outError];
-    if (!self.recorder) { 
+    // Create and configure recorder quickly to minimize audio level interruption
+    AVAudioRecorder *newRecorder = [[AVAudioRecorder alloc] initWithURL:fileURL
+                                                                settings:settings
+                                                                   error:outError];
+    if (!newRecorder) { 
         return NO; 
     }
 
-    self.recorder.meteringEnabled = YES;
-    if (![self.recorder prepareToRecord] || ![self.recorder record]) {
+    newRecorder.meteringEnabled = YES;
+    
+    // Prepare and start recording atomically
+    if (![newRecorder prepareToRecord]) {
+        if (outError) {
+            *outError = [NSError errorWithDomain:kRecorderErrorDomain
+                                            code:1006
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Failed to prepare recording"}];
+        }
+        return NO;
+    }
+    
+    // Replace old recorder with new one
+    self.recorder = newRecorder;
+    
+    if (![self.recorder record]) {
         if (outError) {
             *outError = [NSError errorWithDomain:kRecorderErrorDomain
                                             code:1006
@@ -363,6 +377,7 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
         }
         return NO;
     }
+    
     return YES;
 }
 
@@ -398,14 +413,20 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
 }
 
 - (void)finishCurrentChunk:(BOOL)isLastChunk {
-    if (self.recorder) {
-        [self.recorder stop];
-    }
+    // Capture current recorder reference for smooth handoff
+    AVAudioRecorder *currentRecorder = self.recorder;
     
     // FIXED: Capture the file path and seq in local variables to avoid race conditions
     NSString *filePath = self.currentFilePath;
     NSInteger chunkSeq = self.seq;
     NSTimeInterval chunkStartTimestamp = self.chunkStartTime;
+    
+    // Stop current recorder in background to avoid blocking audio level monitoring
+    if (currentRecorder) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+            [currentRecorder stop];
+        });
+    }
     
     if (!filePath) { 
         NSLog(@"AudioChunkRecorder: No currentFilePath to finish");
@@ -418,8 +439,8 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     
     NSLog(@"AudioChunkRecorder: Finishing chunk %ld at path: %@, duration: %.2fs, isLast: %@", (long)chunkSeq, filePath, actualDuration, isLastChunk ? @"YES" : @"NO");
 
-    // Process chunk in background queue to avoid blocking main thread
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    // Process chunk in low priority background queue to avoid interfering with audio level monitoring
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
         NSFileManager *fm = [NSFileManager defaultManager];
         if ([fm fileExistsAtPath:filePath]) {
             NSDictionary *attributes = [fm attributesOfItemAtPath:filePath error:nil];
@@ -442,27 +463,27 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
                 
                 NSLog(@"AudioChunkRecorder: 📤 Event data: %@", chunkData);
                 
-                // Send event from main queue but without delay
-                dispatch_async(dispatch_get_main_queue(), ^{
+                // Send chunk event with low priority to avoid blocking audio level updates
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
                     [self sendEventWithName:@"onChunkReady" body:chunkData];
                     NSLog(@"AudioChunkRecorder: ✅ Event sent successfully for chunk %ld", (long)chunkSeq);
                 });
             } else {
                 NSLog(@"AudioChunkRecorder: ❌ File is empty");
-                dispatch_async(dispatch_get_main_queue(), ^{
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
                     [self emitErrorWithCode:1007 message:@"Recorded file is empty"];
                 });
             }
         } else {
             NSLog(@"AudioChunkRecorder: ❌ File does not exist at path: %@", filePath);
-            dispatch_async(dispatch_get_main_queue(), ^{
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
                 [self emitErrorWithCode:1008 message:@"Recorded file was not created"];
             });
         }
     });
 }
 
-// Starts the next chunk
+// Starts the next chunk with optimized audio level continuity
 - (void)startNextChunk {
     if (!self.isRecording || self.isPaused) { 
         return; 
@@ -472,10 +493,12 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     NSTimeInterval currentTime = [NSDate timeIntervalSinceReferenceDate];
     self.accumulatedRecordingTime += (currentTime - self.chunkStartTime);
     
+    // Keep audio level monitoring active during chunk rotation
+    BOOL wasMonitoringLevel = (self.levelTimer != nil);
+    
     [self finishCurrentChunk];
     
     if (self.isRecording) {
-      
         self.seq += 1;
         
         NSError *error;
@@ -484,23 +507,30 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
             [self stopRecording:nil rejecter:nil];
         } else {
             [self scheduleRotation];
+            
+            // Ensure audio level monitoring continues uninterrupted
+            if (wasMonitoringLevel && self.levelTimer == nil) {
+                [self startAudioLevelMonitoring];
+            }
         }
     }
 }
 
 #pragma mark - Audio Level Monitoring
 
-// Starts monitoring audio levels and emitting events
+// Starts monitoring audio levels and emitting events with high priority
 - (void)startAudioLevelMonitoring {
     if (self.levelTimer) {
         dispatch_source_cancel(self.levelTimer);
     }
     
-    self.levelTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+    // Use highest priority queue for audio level monitoring to prevent interruptions
+    dispatch_queue_t highPriorityQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
+    self.levelTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, highPriorityQueue);
     dispatch_source_set_timer(self.levelTimer,
                               dispatch_time(DISPATCH_TIME_NOW, 0),
-                              0.2 * NSEC_PER_SEC, // Update every 200ms (reduced frequency)
-                              0.1 * NSEC_PER_SEC); // 100ms leeway
+                              0.1 * NSEC_PER_SEC, // Update every 100ms for smoother animation
+                              0.05 * NSEC_PER_SEC); // Tight 50ms leeway for consistency
     
     __weak typeof(self) weakSelf = self;
     dispatch_source_set_event_handler(self.levelTimer, ^{
@@ -509,47 +539,66 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     dispatch_resume(self.levelTimer);
 }
 
-// Stops monitoring audio levels
+// Stops monitoring audio levels with smooth transition
 - (void)stopAudioLevelMonitoring {
     if (self.levelTimer) {
         dispatch_source_cancel(self.levelTimer);
         self.levelTimer = nil;
     }
     
-    // Emit zero level when stopping
-    [self sendEventWithName:@"onAudioLevel" body:@{@"level": @(0.0)}];
+    // Emit smooth transition to zero level when stopping
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        [self sendEventWithName:@"onAudioLevel" body:@{
+            @"level": @(0.0),
+            @"hasAudio": @(NO),
+            @"averagePower": @(-160.0) // Silence level
+        }];
+    });
 }
 
-// Updates and emits current audio level
+// Updates and emits current audio level with optimized continuity
 - (void)updateAudioLevel {
-    if (!self.recorder || !self.recorder.isRecording || self.isPaused) {
+    // Keep monitoring active even during brief recorder transitions
+    if (!self.recorder || self.isPaused) {
         return;
     }
     
-    [self.recorder updateMeters];
-    
-    // Get average power level in dB (typically -160 to 0)
-    float averagePower = [self.recorder averagePowerForChannel:0];
-    
-    // Convert dB to linear scale (0.0 to 1.0)
-    // -60dB is considered silence, 0dB is maximum
-    float normalizedLevel = 0.0;
-    if (averagePower > -60.0) {
-        normalizedLevel = (averagePower + 60.0) / 60.0;
-        normalizedLevel = MAX(0.0, MIN(1.0, normalizedLevel));
+    // Skip if recorder is not in a valid state, but don't stop monitoring
+    if (!self.recorder.isRecording) {
+        return;
     }
     
-    // iOS is more sensitive, so use moderate threshold (25% instead of 35%)
-    BOOL hasAudio = normalizedLevel > 0.20; // Reduced from 0.35 to 0.25 for iOS
-    
-    // Send audio level event from main queue
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self sendEventWithName:@"onAudioLevel" body:@{
-            @"level": @(normalizedLevel),
-            @"hasAudio": @(hasAudio),
-            @"averagePower": @(averagePower)
-        }];
-    });
+    @try {
+        [self.recorder updateMeters];
+        
+        // Get average power level in dB (typically -160 to 0)
+        float averagePower = [self.recorder averagePowerForChannel:0];
+        
+        // Convert dB to linear scale (0.0 to 1.0)
+        // -60dB is considered silence, 0dB is maximum
+        float normalizedLevel = 0.0;
+        if (averagePower > -60.0) {
+            normalizedLevel = (averagePower + 60.0) / 60.0;
+            normalizedLevel = MAX(0.0, MIN(1.0, normalizedLevel));
+        }
+        
+        // iOS is more sensitive, so use moderate threshold (25% instead of 35%)
+        BOOL hasAudio = normalizedLevel > 0.20; // Reduced from 0.35 to 0.25 for iOS
+        
+        // Send audio level event immediately without going to main queue to avoid blocking
+        // Use a dedicated high-priority queue for audio level events
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+            [self sendEventWithName:@"onAudioLevel" body:@{
+                @"level": @(normalizedLevel),
+                @"hasAudio": @(hasAudio),
+                @"averagePower": @(averagePower)
+            }];
+        });
+    } @catch (NSException *exception) {
+        // Silently continue if there's a temporary issue with the recorder
+        // This prevents audio level monitoring from stopping during chunk transitions
+        NSLog(@"AudioChunkRecorder: Temporary audio level read error (continuing): %@", exception.reason);
+    }
 }
 
 #pragma mark - Audio Session Interruption Handling
@@ -862,18 +911,21 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     [self emitError:error];
 }
 
-// Rotates to a new chunk by finishing the current one and starting a new one
+// Rotates to a new chunk with optimized audio level continuity
 - (void)rotateChunk {
     if (!self.isRecording) { 
         return; 
     }
     
-    NSLog(@"AudioChunkRecorder: Rotating to new chunk");
+    NSLog(@"AudioChunkRecorder: Rotating to new chunk with audio level continuity");
+    
+    // Preserve audio level monitoring state
+    BOOL shouldMaintainAudioLevel = (self.levelTimer != nil);
     
     // First, finish the current chunk
     [self finishCurrentChunk:NO]; // Not the last chunk
     
-    // Then start a new chunk
+    // Then start a new chunk immediately to minimize audio level gap
     NSError *error = nil;
     if (![self beginRecording:&error]) {
         NSLog(@"AudioChunkRecorder: Failed to start new chunk: %@", error.localizedDescription);
@@ -883,6 +935,11 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     
     // Increment sequence number after successful start
     self.seq += 1;
+    
+    // Ensure audio level monitoring continues uninterrupted
+    if (shouldMaintainAudioLevel && self.levelTimer == nil) {
+        [self startAudioLevelMonitoring];
+    }
     
     // Schedule the next rotation
     [self scheduleRotation];

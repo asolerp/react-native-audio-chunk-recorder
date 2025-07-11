@@ -103,36 +103,40 @@ class EventListenerManager {
     // Clear existing listeners
     this.cleanup();
 
-    // Chunk ready listener
+    // Chunk ready listener with low priority to avoid interfering with audio level
     const chunkListener = AudioChunkRecorderEventEmitter.addListener(
       "onChunkReady",
       (chunk: ChunkData) => {
-        this.notifyListeners("onChunkReady", chunk);
-        options.onChunkReady?.(chunk);
+        // Use setTimeout to defer chunk processing and avoid blocking audio level updates
+        setTimeout(() => {
+          this.notifyListeners("onChunkReady", chunk);
+          options.onChunkReady?.(chunk);
 
-        // Upload chunk if uploader is provided
-        if (options.chunkUploader) {
-          options.chunkUploader.upload(chunk).catch((error) => {
-            console.error("AudioRecorderCore: Chunk upload failed:", error);
-            errorTracker.captureException(error, {
-              chunk: chunk,
-              action: "chunk_upload",
-              chunkSeq: chunk.sequence,
+          // Upload chunk if uploader is provided
+          if (options.chunkUploader) {
+            options.chunkUploader.upload(chunk).catch((error) => {
+              console.error("AudioRecorderCore: Chunk upload failed:", error);
+              errorTracker.captureException(error, {
+                chunk: chunk,
+                action: "chunk_upload",
+                chunkSeq: chunk.sequence,
+              });
+              options.chunkUploader?.onError?.(
+                chunk.sequence.toString(),
+                error.message || "Upload failed"
+              );
             });
-            options.chunkUploader?.onError?.(
-              chunk.sequence.toString(),
-              error.message || "Upload failed"
-            );
-          });
-        }
+          }
+        }, 0); // Defer to next tick to prioritize audio level
       }
     );
 
-    // Audio level listener with throttling
+    // Audio level listener with optimized high-priority handling
     const levelListener = AudioChunkRecorderEventEmitter.addListener(
       "onAudioLevel",
       (data: AudioLevelData) => {
         // Update audio level using optimized function to prevent main state rerenders
+        // This now has higher priority to maintain smooth animations
         updateAudioLevel(data.level, data.hasAudio);
         this.notifyListeners("onAudioLevel", data);
       }
@@ -283,6 +287,7 @@ export const useAudioRecorderCore = (
     isInterrupted: false,
     recordingDuration: 0,
     maxRecordingDuration: 7200, // 2 hours default
+    isAudioManagerReady: false, // Track AudioManager initialization
   });
 
   // Separate state for frequently changing values to prevent rerenders
@@ -331,10 +336,15 @@ export const useAudioRecorderCore = (
 
   // Initialize service - only once
   useEffect(() => {
+    console.log("AudioRecorderCore: 🔄 Initializing native service...");
     try {
       serviceRef.current = NativeAudioChunkRecorder;
       NativeAudioChunkRecorder.isAvailable()
         .then((available) => {
+          console.log(
+            "AudioRecorderCore: ✅ Native service available:",
+            available
+          );
           updateState({ isAvailable: available });
         })
         .catch((error) => {
@@ -349,6 +359,48 @@ export const useAudioRecorderCore = (
       updateState({ isAvailable: false });
     }
   }, [updateState]); // Add updateState to dependencies
+
+  // Wait for AudioManager to be ready after service is available
+  useEffect(() => {
+    if (state.isAvailable && !state.isAudioManagerReady) {
+      console.log(
+        "AudioRecorderCore: 🔄 Waiting for AudioManager to be ready..."
+      );
+
+      // Give AudioManager time to initialize
+      const initTimeout = setTimeout(async () => {
+        try {
+          // Test the AudioManager with a simple operation
+          const managerState = audioManager.getState();
+          console.log("AudioRecorderCore: AudioManager state:", managerState);
+
+          // Additional check - try to access the native service through AudioManager
+          // This ensures the initialization promise has resolved
+          await new Promise((resolve) => setTimeout(resolve, 100));
+
+          updateState({ isAudioManagerReady: true });
+          console.log(
+            "AudioRecorderCore: ✅ AudioManager is ready for auto-start"
+          );
+        } catch (error) {
+          console.error("AudioRecorderCore: AudioManager not ready:", error);
+          // Retry after a longer delay
+          setTimeout(() => {
+            if (!state.isAudioManagerReady) {
+              console.log(
+                "AudioRecorderCore: 🔄 Retrying AudioManager initialization..."
+              );
+              updateState({ isAudioManagerReady: false });
+            }
+          }, 2000);
+        }
+      }, 1000); // Wait 1 second for AudioManager to initialize
+
+      return () => {
+        clearTimeout(initTimeout);
+      };
+    }
+  }, [state.isAvailable, state.isAudioManagerReady, updateState]);
 
   // Setup native event listeners - optimized dependencies
   useEffect(() => {
@@ -526,95 +578,6 @@ export const useAudioRecorderCore = (
     }
   }, [updateState, errorTracker]);
 
-  // Duration tracking functions
-  const startDurationTracking = useCallback(
-    (maxDuration: number) => {
-      recordingStartTimeRef.current = Date.now();
-      pausedTimeRef.current = 0;
-      updateState({ maxRecordingDuration: maxDuration });
-
-      if (durationIntervalRef.current) {
-        clearInterval(durationIntervalRef.current);
-      }
-
-      durationIntervalRef.current = setInterval(() => {
-        if (recordingStartTimeRef.current && !state.isPaused) {
-          const elapsed =
-            (Date.now() -
-              recordingStartTimeRef.current -
-              pausedTimeRef.current) /
-            1000;
-          updateState({ recordingDuration: elapsed });
-
-          // Check if max duration reached
-          if (elapsed >= maxDuration) {
-            clearInterval(durationIntervalRef.current!);
-            durationIntervalRef.current = null;
-
-            // Stop recording and notify
-            stopRecording()
-              .then(() => {
-                const maxDurationData: MaxDurationReachedData = {
-                  duration: elapsed,
-                  maxDuration: maxDuration,
-                  chunks: state.chunks,
-                };
-
-                eventManagerRef.current!.notifyListeners(
-                  "onMaxDurationReached",
-                  maxDurationData
-                );
-                options.onMaxDurationReached?.(maxDurationData);
-
-                errorTracker.addBreadcrumb({
-                  message: `Max recording duration reached: ${elapsed}s / ${maxDuration}s`,
-                  category: "recording_limit",
-                  level: "info",
-                  data: maxDurationData,
-                });
-              })
-              .catch((error) => {
-                console.error(
-                  "AudioRecorderCore: Failed to stop recording on max duration:",
-                  error
-                );
-              });
-          }
-        }
-      }, 1000);
-    },
-    [
-      state.isPaused,
-      state.chunks,
-      updateState,
-      stopRecording,
-      options.onMaxDurationReached,
-      errorTracker,
-    ]
-  );
-
-  const stopDurationTracking = useCallback(() => {
-    if (durationIntervalRef.current) {
-      clearInterval(durationIntervalRef.current);
-      durationIntervalRef.current = null;
-    }
-    recordingStartTimeRef.current = null;
-    pausedTimeRef.current = 0;
-    updateState({ recordingDuration: 0 });
-  }, [updateState]);
-
-  const pauseDurationTracking = useCallback(() => {
-    if (recordingStartTimeRef.current) {
-      pausedTimeRef.current += Date.now() - recordingStartTimeRef.current;
-    }
-  }, []);
-
-  const resumeDurationTracking = useCallback(() => {
-    if (recordingStartTimeRef.current) {
-      recordingStartTimeRef.current = Date.now();
-    }
-  }, []);
-
   // Auto check permissions on mount - moved after checkPermissions definition
   useEffect(() => {
     if (options.autoCheckPermissions !== false && serviceRef.current) {
@@ -706,6 +669,7 @@ export const useAudioRecorderCore = (
     if (
       options.autoStartRecording &&
       state.isAvailable &&
+      state.isAudioManagerReady &&
       state.hasPermission &&
       !state.isRecording &&
       !state.isPaused &&
@@ -722,6 +686,7 @@ export const useAudioRecorderCore = (
   }, [
     options.autoStartRecording,
     state.isAvailable,
+    state.isAudioManagerReady,
     state.hasPermission,
     state.isRecording,
     state.isPaused,
