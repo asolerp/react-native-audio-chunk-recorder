@@ -163,7 +163,6 @@ export default function DurationTrackingExample() {
       console.log(`✅ Chunk ${chunk.sequence} ready:`, {
         path: chunk.path,
         uri: getChunkUri(chunk),
-        duration: chunk.duration,
         size: chunk.size,
         timestamp: new Date(chunk.timestamp || 0).toLocaleTimeString(),
       });
@@ -224,15 +223,11 @@ export default function DurationTrackingExample() {
   };
 
   const getChunkStats = () => {
-    const totalDuration = recorder.getTotalChunksDuration();
     const totalSize = chunks.reduce((sum, chunk) => sum + (chunk.size || 0), 0);
-    const avgDuration = chunks.length > 0 ? totalDuration / chunks.length : 0;
     const avgSize = chunks.length > 0 ? totalSize / chunks.length : 0;
 
     return {
-      totalDuration,
       totalSize,
-      avgDuration,
       avgSize,
     };
   };
@@ -366,21 +361,10 @@ export default function DurationTrackingExample() {
             <Text style={styles.statLabel}>Total chunks:</Text>
             <Text style={styles.statValue}>{chunks.length}</Text>
           </View>
-          <View style={styles.statItem}>
-            <Text style={styles.statLabel}>Duración total:</Text>
-            <Text style={styles.statValue}>
-              {formatDuration(stats.totalDuration)}
-            </Text>
-          </View>
+
           <View style={styles.statItem}>
             <Text style={styles.statLabel}>Tamaño total:</Text>
             <Text style={styles.statValue}>{formatBytes(stats.totalSize)}</Text>
-          </View>
-          <View style={styles.statItem}>
-            <Text style={styles.statLabel}>Duración promedio:</Text>
-            <Text style={styles.statValue}>
-              {formatDuration(stats.avgDuration)}
-            </Text>
           </View>
         </View>
       </View>
@@ -391,8 +375,7 @@ export default function DurationTrackingExample() {
         {chunks.map((chunk) => (
           <View key={chunk.sequence} style={styles.chunkItem}>
             <Text style={styles.chunkText}>
-              #{chunk.sequence} - {chunk.duration?.toFixed(1)}s - {chunk.size}{" "}
-              bytes
+              #{chunk.sequence} - {chunk.size} bytes
               {chunk.isLastChunk && (
                 <Text style={styles.lastChunkText}> (LAST)</Text>
               )}

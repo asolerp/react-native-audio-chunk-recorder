@@ -62,20 +62,19 @@ public class EventEmitter {
     }
 
     /**
-     * Send chunk ready event with duration and timing info
+     * Send chunk ready event with timing info
      */
-    public void sendChunkReadyEvent(String path, int sequence, double duration, long timestamp, long fileSize) {
-        sendChunkReadyEvent(path, sequence, duration, timestamp, fileSize, false);
+    public void sendChunkReadyEvent(String path, int sequence, long timestamp, long fileSize) {
+        sendChunkReadyEvent(path, sequence, timestamp, fileSize, false);
     }
 
     /**
-     * Send chunk ready event with duration and timing info and last chunk flag
+     * Send chunk ready event with timing info and last chunk flag
      */
-    public void sendChunkReadyEvent(String path, int sequence, double duration, long timestamp, long fileSize, boolean isLastChunk) {
+    public void sendChunkReadyEvent(String path, int sequence, long timestamp, long fileSize, boolean isLastChunk) {
         WritableMap map = Arguments.createMap();
         map.putString("path", path);
         map.putInt("sequence", sequence);
-        map.putDouble("duration", duration);
         map.putDouble("timestamp", timestamp);
         map.putDouble("size", fileSize);
         map.putBoolean("isLastChunk", isLastChunk);
@@ -85,16 +84,15 @@ public class EventEmitter {
     /**
      * Send chunk event with complete chunk information
      */
-    public void sendChunkEvent(int chunkIndex, String path, double duration, long timestamp, long size) {
+    public void sendChunkEvent(int chunkIndex, String path, long timestamp, long size) {
         WritableMap map = Arguments.createMap();
         map.putInt("sequence", chunkIndex); // Use "sequence" to match ChunkData interface
         map.putString("path", path);
-        map.putDouble("duration", duration);
         map.putDouble("timestamp", timestamp);
         map.putDouble("size", size);
         sendEvent("onChunkReady", map);
         
-        Log.d(TAG, "📤 CHUNK EVENT SENT: sequence=" + chunkIndex + ", path=" + path + ", duration=" + duration + "s, size=" + size);
+        Log.d(TAG, "📤 CHUNK EVENT SENT: sequence=" + chunkIndex + ", path=" + path + ", size=" + size);
     }
 
     /**

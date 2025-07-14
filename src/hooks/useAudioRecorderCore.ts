@@ -768,25 +768,7 @@ export const useAudioRecorderCore = (
     []
   );
 
-  // Duration utility functions with memoization
-  const getChunkDuration = useCallback(
-    (chunkIndex: number): number => {
-      if (chunkIndex >= 0 && chunkIndex < chunksRef.current.length) {
-        const chunk = chunksRef.current[chunkIndex];
-        return chunk.duration || 0;
-      }
-      return 0;
-    },
-    [] // No dependencies since we use ref
-  );
-
-  const getTotalChunksDuration = useCallback((): number => {
-    return chunksRef.current.reduce(
-      (total, chunk) => total + (chunk.duration || 0),
-      0
-    );
-  }, []); // No dependencies since we use ref
-
+  // Utility functions with memoization
   const getExpectedChunkDuration = useCallback((): number => {
     return options.defaultRecordingOptions?.chunkSeconds || 30;
   }, [options.defaultRecordingOptions?.chunkSeconds]); // Only depend on specific prop
@@ -827,8 +809,6 @@ export const useAudioRecorderCore = (
       checkPermissions,
 
       // Duration utilities
-      getChunkDuration,
-      getTotalChunksDuration,
       getExpectedChunkDuration,
 
       // Event handlers
@@ -858,8 +838,6 @@ export const useAudioRecorderCore = (
       clearChunks,
       clearAllChunkFiles,
       checkPermissions,
-      getChunkDuration,
-      getTotalChunksDuration,
       getExpectedChunkDuration,
       onChunkReady,
       onAudioLevel,

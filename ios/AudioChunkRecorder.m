@@ -74,17 +74,19 @@ RCT_EXPORT_METHOD(startRecording:(NSDictionary *)options
         return;
     }
 
-    // Configure and start recording on main thread
-    dispatch_async(dispatch_get_main_queue(), ^{
+    // ✅ FIXED: Use background queue to avoid blocking JS thread
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSError *error = nil;
         if (![self configureAudioSession:&error] || ![self beginRecording:&error]) {
             reject(@"start_failed", error.localizedDescription ?: @"Failed to start recording", error);
             return;
         }
-        self.isRecording = YES;
         
-        // Emit state change event immediately after starting
-        [self emitStateChange];
+        // Only update UI state on main queue
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.isRecording = YES;
+            [self emitStateChange];
+        });
         
         [self setupAudioSessionNotifications];
         [self scheduleRotation];
@@ -277,9 +279,8 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
         NSArray *files = [fileManager contentsOfDirectoryAtPath:documentsPath error:&error];
         
         if (error) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                reject(@"FILE_ERROR", @"Could not read documents directory", error);
-            });
+            // ✅ FIXED: No need to go back to main queue for reject
+            reject(@"FILE_ERROR", @"Could not read documents directory", error);
             return;
         }
         
@@ -301,9 +302,8 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
             }
         }
         
-        dispatch_async(dispatch_get_main_queue(), ^{
-            resolve([NSString stringWithFormat:@"Deleted %ld chunk files", (long)deletedCount]);
-        });
+        // ✅ FIXED: No need to go back to main queue for resolve
+        resolve([NSString stringWithFormat:@"Deleted %ld chunk files", (long)deletedCount]);
     });
 }
 
@@ -395,7 +395,9 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     // Update chunk start time when scheduling
     self.chunkStartTime = [NSDate timeIntervalSinceReferenceDate];
     
-    self.timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    // ✅ FIXED: Use background queue for timer to avoid blocking main thread
+    dispatch_queue_t timerQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+    self.timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, timerQueue);
     dispatch_source_set_timer(self.timer,
                               dispatch_time(DISPATCH_TIME_NOW, delay * NSEC_PER_SEC),
                               DISPATCH_TIME_FOREVER, // One-time timer
@@ -437,7 +439,7 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     NSTimeInterval chunkEndTime = [NSDate timeIntervalSinceReferenceDate];
     NSTimeInterval actualDuration = self.accumulatedRecordingTime + (chunkEndTime - self.chunkStartTime);
     
-    NSLog(@"AudioChunkRecorder: Finishing chunk %ld at path: %@, duration: %.2fs, isLast: %@", (long)chunkSeq, filePath, actualDuration, isLastChunk ? @"YES" : @"NO");
+            NSLog(@"AudioChunkRecorder: Finishing chunk %ld at path: %@, isLast: %@", (long)chunkSeq, filePath, isLastChunk ? @"YES" : @"NO");
 
     // Process chunk in low priority background queue to avoid interfering with audio level monitoring
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
@@ -447,7 +449,7 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
             NSNumber *size = attributes[NSFileSize];
             NSLog(@"AudioChunkRecorder: File exists, size: %@ bytes", size);
             if (size.unsignedLongLongValue > 0) {
-                NSLog(@"AudioChunkRecorder: 🎯 EMITTING CHUNK TO FRONTEND - seq: %ld, path: %@, size: %@ bytes, duration: %.2fs, isLast: %@", (long)chunkSeq, filePath, size, actualDuration, isLastChunk ? @"YES" : @"NO");
+                NSLog(@"AudioChunkRecorder: 🎯 EMITTING CHUNK TO FRONTEND - seq: %ld, path: %@, size: %@ bytes, isLast: %@", (long)chunkSeq, filePath, size, isLastChunk ? @"YES" : @"NO");
                 
                 // Convert timestamp to milliseconds (Unix timestamp)
                 NSTimeInterval timestampMs = chunkStartTimestamp * 1000;
@@ -455,7 +457,6 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
                 NSDictionary *chunkData = @{
                     @"path": filePath,
                     @"sequence": @(chunkSeq),
-                    @"duration": @(actualDuration),
                     @"timestamp": @(timestampMs),
                     @"size": size,
                     @"isLastChunk": @(isLastChunk)
@@ -605,17 +606,20 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
 
 // Sets up AVAudioSession interruption notifications
 - (void)setupAudioSessionNotifications {
-    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
-    
-    [center addObserver:self
-               selector:@selector(handleAudioSessionInterruption:)
-                   name:AVAudioSessionInterruptionNotification
-                 object:[AVAudioSession sharedInstance]];
-    
-    [center addObserver:self
-               selector:@selector(handleAudioSessionRouteChange:)
-                   name:AVAudioSessionRouteChangeNotification
-                 object:[AVAudioSession sharedInstance]];
+    // ✅ PERFORMANCE: Set up notifications on background queue to avoid blocking JS thread
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+        
+        [center addObserver:self
+                   selector:@selector(handleAudioSessionInterruption:)
+                       name:AVAudioSessionInterruptionNotification
+                     object:[AVAudioSession sharedInstance]];
+        
+        [center addObserver:self
+                   selector:@selector(handleAudioSessionRouteChange:)
+                       name:AVAudioSessionRouteChangeNotification
+                     object:[AVAudioSession sharedInstance]];
+    });
 }
 
 // Removes AVAudioSession interruption notifications
@@ -779,7 +783,9 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
         return; // No limit set
     }
     
-    self.maxDurationTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    // ✅ FIXED: Use background queue for max duration timer to avoid blocking main thread
+    dispatch_queue_t timerQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+    self.maxDurationTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, timerQueue);
     dispatch_source_set_timer(self.maxDurationTimer,
                               dispatch_time(DISPATCH_TIME_NOW, self.maxRecordingDuration * NSEC_PER_SEC),
                               DISPATCH_TIME_FOREVER, // One-time timer
@@ -825,8 +831,9 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
         return;
     }
     
-    // Start timer for remaining time
-    self.maxDurationTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    // ✅ FIXED: Use background queue for max duration timer to avoid blocking main thread
+    dispatch_queue_t timerQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+    self.maxDurationTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, timerQueue);
     dispatch_source_set_timer(self.maxDurationTimer,
                               dispatch_time(DISPATCH_TIME_NOW, remainingTime * NSEC_PER_SEC),
                               DISPATCH_TIME_FOREVER, // One-time timer
@@ -847,18 +854,20 @@ RCT_EXPORT_METHOD(clearAllChunkFiles:(RCTPromiseResolveBlock)resolve
     
     NSLog(@"AudioChunkRecorder: Max duration reached, stopping recording");
     
-    // Stop recording
-    self.isRecording = NO;
-    [self emitStateChange];
+    // Calculate total recording duration
+    NSTimeInterval totalDuration = [NSDate timeIntervalSinceReferenceDate] - self.recordingStartTime;
     
-    // Clean up
+    // ✅ FIXED: Only update state on main queue, rest can be on background
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.isRecording = NO;
+        [self emitStateChange];
+    });
+    
+    // Clean up (can be done on background)
     [self removeAudioSessionNotifications];
     [self stopAudioLevelMonitoring];
     [self stopMaxDurationTracking];
     [self finishCurrentChunk:YES]; // Mark as last chunk
-    
-    // Calculate total recording duration
-    NSTimeInterval totalDuration = [NSDate timeIntervalSinceReferenceDate] - self.recordingStartTime;
     
     // Emit max duration reached event
     NSDictionary *maxDurationData = @{

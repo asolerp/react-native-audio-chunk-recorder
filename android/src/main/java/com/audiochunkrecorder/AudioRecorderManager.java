@@ -563,7 +563,6 @@ public class AudioRecorderManager {
                         eventEmitter.sendChunkEvent(
                             currentChunkIndex.get(),
                             chunkPath,
-                            actualChunkDuration,
                             currentChunkStartTime,
                             chunkSize
                         );

@@ -27,7 +27,6 @@ export default function BasicUsage() {
     onChunkReady: (chunk) => {
       console.log("📦 New chunk ready:", {
         sequence: chunk.sequence,
-        duration: chunk.duration,
         size: chunk.size,
         timestamp: chunk.timestamp
           ? new Date(chunk.timestamp).toLocaleTimeString()
@@ -118,8 +117,7 @@ export default function BasicUsage() {
         {chunks.map((chunk, index) => (
           <View key={index} style={styles.chunkItem}>
             <Text style={styles.chunkText}>
-              #{chunk.sequence} - {chunk.duration?.toFixed(1) || "0.0"}s -{" "}
-              {((chunk.size || 0) / 1024).toFixed(1)}KB
+              #{chunk.sequence} - {((chunk.size || 0) / 1024).toFixed(1)}KB
             </Text>
             <Text style={styles.chunkTime}>
               {chunk.timestamp

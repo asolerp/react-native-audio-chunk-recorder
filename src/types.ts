@@ -10,7 +10,6 @@ import { ErrorTracker } from "./providers/errorTracker";
 export interface ChunkData {
   path: string; // File system path
   sequence: number; // Chunk sequence starting from 1
-  duration?: number; // Duration in seconds
   timestamp?: number; // When the chunk was created (Unix timestamp)
   size?: number; // File size in bytes
   isLastChunk?: boolean; // True if this is the final chunk
@@ -25,7 +24,7 @@ export interface RecordingOptions {
   sampleRate?: number; // Default: 16000
   bitRate?: number; // Default: 64000
   chunkSeconds?: number; // Default: 30
-  maxRecordingDuration?: number; // Default: 7200 (2 hours in seconds)
+  maxRecordingDuration?: number; // Default: 7200 (2 hours)
 }
 
 // Aliases for compatibility
@@ -35,12 +34,6 @@ export type AudioChunk = ChunkData;
 export interface ErrorData {
   message: string;
   code?: number;
-}
-
-export interface MaxDurationReachedData {
-  duration: number;
-  maxDuration: number;
-  chunks: ChunkData[];
 }
 
 export interface InterruptionData {
@@ -55,6 +48,12 @@ export interface InterruptionData {
 export interface StateChangeData {
   isRecording: boolean;
   isPaused: boolean;
+}
+
+export interface MaxDurationReachedData {
+  duration: number;
+  maxDuration: number;
+  chunks: ChunkData[];
 }
 
 export interface AudioLevelData {
@@ -134,9 +133,9 @@ export interface AudioRecorderCoreReturn {
   isInterrupted: boolean;
 
   // Recording duration tracking
-  recordingDuration: number; // Current recording duration in seconds
-  maxRecordingDuration: number; // Maximum allowed duration in seconds
-  remainingDuration: number; // Remaining time in seconds
+  recordingDuration: number;
+  maxRecordingDuration: number;
+  remainingDuration: number;
 
   // Queue state (if enabled)
   queueSize?: number;
@@ -152,9 +151,7 @@ export interface AudioRecorderCoreReturn {
   checkPermissions: () => Promise<void>;
 
   // Duration utilities
-  getChunkDuration: (chunkIndex: number) => number; // Get duration of specific chunk
-  getTotalChunksDuration: () => number; // Get total duration of all chunks
-  getExpectedChunkDuration: () => number; // Get expected chunk duration from settings
+  getExpectedChunkDuration: () => number;
 
   // Event handlers (for custom logic)
   onChunkReady: (callback: (chunk: ChunkData) => void) => () => void;
